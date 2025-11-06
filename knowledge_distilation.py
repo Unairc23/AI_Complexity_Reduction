@@ -26,8 +26,8 @@ train_dataset = datasets.CIFAR10(root='./data', train=True, download=True, trans
 test_dataset = datasets.CIFAR10(root='./data', train=False, download=True, transform=transforms_cifar)
 
 #Dataloaders
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=2)
-test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=2)
+train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True, num_workers=8)
+test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=8)
 
 # ========================== MODELOS ============================
 # Deeper neural network class to be used as teacher:
@@ -85,6 +85,55 @@ class DeepNN(nn.Module):
         x = self.classifier(x)
         return x
 
+class DeepNN_Adaptada(nn.Module):
+    def __init__(self, num_classes=10):
+        super(DeepNN_Adaptada, self).__init__()
+        self.features = nn.Sequential(
+            nn.Conv2d(3, 64, kernel_size=3, padding=1),
+            nn.ReLU(),
+            # En teoria en todos estos ReLU puedes usar inplace=True, lo que hace que los valores nuevos sobrescriban
+            # los anteriores, lo cual reduce la memoria necesaria. Esto puede crear problemas, pero al ser una red
+            # simple como esta no deberia de haber problemas
+            nn.MaxPool2d(2, 2),
+
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.ReLU(),
+
+            nn.Conv2d(256, 128, kernel_size=3, padding=1),
+            nn.ReLU(),
+
+            nn.Conv2d(128, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+        )
+
+        # Se adapta el tamaño a 7x7 (explicar)
+        self.adaptive_pool = nn.AdaptiveAvgPool2d((7, 7))  # out: 64 x 7 x 7
+
+        # Clasificador totalmente conectado: fc3136 -> fc1200 -> fc800
+        self.classifier = nn.Sequential(
+            nn.Linear(64 * 7 * 7, 3136),
+            nn.ReLU(inplace=True),
+
+            nn.Linear(3136, 1200),
+            nn.ReLU(inplace=True),
+
+            nn.Linear(1200, 800),
+            nn.ReLU(inplace=True),
+
+            nn.Linear(800, num_classes)
+        )
+
+    def forward(self, x):
+        x = self.features(x)
+        x = self.adaptive_pool(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
 
 # Lightweight neural network class to be used as student:
 class LightNN(nn.Module):
@@ -104,6 +153,41 @@ class LightNN(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(256, num_classes)
         )
+    def forward(self, x):
+        x = self.features(x)
+        x = torch.flatten(x, 1)
+        x = self.classifier(x)
+        return x
+
+class LightNN_Adaptada(nn.Module):
+    def __init__(self, num_classes=10):
+        super(LightNN_Adaptada, self).__init__()
+        self.features = nn.Sequential(
+            # Bloque 1
+            nn.Conv2d(3, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),  # 32x32 -> 16x16
+
+            # Bloque 2
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
+            nn.ReLU(),
+            nn.MaxPool2d(2, 2),  # 16x16 -> 8x8
+
+            # Bloque 3
+            nn.Conv2d(128, 256, kernel_size=3, padding=1),
+            nn.BatchNorm2d(256),
+            nn.ReLU(),
+        )
+
+        self.classifier = nn.Sequential(
+            nn.Linear(256 * 4 * 4, 256),
+            nn.ReLU(),
+            nn.Dropout(0.1),
+            nn.Linear(256, num_classes)
+        )
+
     def forward(self, x):
         x = self.features(x)
         x = torch.flatten(x, 1)
@@ -215,17 +299,17 @@ if __name__ == "__main__":
 
     if len(sys.argv)>1 and sys.argv[1] == "full":
         torch.manual_seed(42)
-        nn_deep = DeepNN(num_classes=10).to(device)
-        train(nn_deep, train_loader, epochs=10, learning_rate=0.001, device=device)
+        nn_deep = DeepNN_Adaptada(num_classes=10).to(device)
+        train(nn_deep, train_loader, epochs=100, learning_rate=0.01, device=device)
 
         torch.manual_seed(42)
-        nn_light = LightNN(num_classes=10).to(device)
+        nn_light = LightNN_Adaptada(num_classes=10).to(device)
         torch.manual_seed(42)
         total_params_deep = "{:,}".format(sum(p.numel() for p in nn_deep.parameters()))
         print(f"DeepNN parameters: {total_params_deep}")
         total_params_light = "{:,}".format(sum(p.numel() for p in nn_light.parameters()))
         print(f"LightNN parameters: {total_params_light}")
-        train(nn_light, train_loader, epochs=10, learning_rate=0.001, device=device)
+        train(nn_light, train_loader, epochs=100, learning_rate=0.01, device=device)
 
         torch.save(nn_deep.state_dict(), "model/DeepNN.pth")
         torch.save(nn_light.state_dict(), "model/student_no_kd.pth")
@@ -241,22 +325,22 @@ if __name__ == "__main__":
 
     # --- Experimento con distintos pesos alpha ---
     alphas = [0.75]
-    Ts = [3, 4, 5, 6, 7, 8, 9, 10]
+    Ts = [20]
     results = {}
 
     for alpha in alphas:
         results[alpha] = {}
         for T in Ts:
-            new_nn_light = LightNN(num_classes=10).to(device)
+            new_nn_light = LightNN_Adaptada(num_classes=10).to(device)
             print(f"\n=== Training student with alpha={alpha} / T={T} ===")
             train_knowledge_distillation(
                 teacher=nn_deep,
                 student=new_nn_light.to(device),
                 train_loader=train_loader,
-                epochs=10,
-                learning_rate=0.001,
+                epochs=100,
+                learning_rate=0.01,
                 T=T,
-                alpha=0.25,
+                alpha=alpha,
                 device=device
             )
             test_accuracy_light_ce_and_kd = test(new_nn_light, test_loader, device)
