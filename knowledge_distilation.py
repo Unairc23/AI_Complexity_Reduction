@@ -7,6 +7,9 @@ import torch.optim as optim
 import torchvision.transforms as transforms
 import torchvision.datasets as datasets
 import torch.nn.functional as F
+import random, numpy as np
+
+import wandb
 # Para instalar torch junto con cuda:
 # "pip3 install torch torchvision --index-url https://download.pytorch.org/whl/cu126"
 
@@ -14,6 +17,14 @@ import torch.nn.functional as F
 # is available, and if not, use the CPU
 device = torch.accelerator.current_accelerator().type if torch.accelerator.is_available() else "cpu"
 # print(f"Using {device} device")
+
+torch.manual_seed(42)
+if device == 'cuda':
+    torch.cuda.manual_seed_all(42)
+random.seed(42)
+np.random.seed(42)
+torch.backends.cudnn.deterministic = True
+torch.backends.cudnn.benchmark = False
 
 # Below we are preprocessing data for CIFAR-10. We use an arbitrary batch size of 128.
 transforms_cifar = transforms.Compose([
@@ -90,7 +101,7 @@ class DeepNN_Adaptada(nn.Module):
         super(DeepNN_Adaptada, self).__init__()
         self.features = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=3, padding=1),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
             # En teoria en todos estos ReLU puedes usar inplace=True, lo que hace que los valores nuevos sobrescriban
             # los anteriores, lo cual reduce la memoria necesaria. Esto puede crear problemas, pero al ser una red
             # simple como esta no deberia de haber problemas
@@ -98,17 +109,17 @@ class DeepNN_Adaptada(nn.Module):
 
             nn.Conv2d(64, 128, kernel_size=3, padding=1),
             nn.BatchNorm2d(128),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
 
             nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
 
             nn.Conv2d(256, 128, kernel_size=3, padding=1),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
 
             nn.Conv2d(128, 64, kernel_size=3, padding=1),
             nn.BatchNorm2d(64),
-            nn.ReLU(),
+            nn.ReLU(inplace=True),
         )
 
         # Se adapta el tamaño a 7x7 (explicar)
@@ -164,25 +175,27 @@ class LightNN_Adaptada(nn.Module):
         super(LightNN_Adaptada, self).__init__()
         self.features = nn.Sequential(
             # Bloque 1
-            nn.Conv2d(3, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64),
+            nn.Conv2d(3, 32, kernel_size=3, padding=1),
+            nn.BatchNorm2d(32),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),  # 32x32 -> 16x16
 
             # Bloque 2
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128),
+            nn.Conv2d(32, 64, kernel_size=3, padding=1),
+            nn.BatchNorm2d(64),
             nn.ReLU(),
             nn.MaxPool2d(2, 2),  # 16x16 -> 8x8
 
             # Bloque 3
-            nn.Conv2d(128, 256, kernel_size=3, padding=1),
-            nn.BatchNorm2d(256),
+            nn.Conv2d(64, 128, kernel_size=3, padding=1),
+            nn.BatchNorm2d(128),
             nn.ReLU(),
+            nn.MaxPool2d(2, 2),  # 8x8 -> 4x4
         )
 
+        # Clasificador totalmente conectado
         self.classifier = nn.Sequential(
-            nn.Linear(256 * 4 * 4, 256),
+            nn.Linear(128 * 4 * 4, 256),  # 2048 -> 256
             nn.ReLU(),
             nn.Dropout(0.1),
             nn.Linear(256, num_classes)
@@ -193,6 +206,32 @@ class LightNN_Adaptada(nn.Module):
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
+
+class EarlyStopping:
+    def __init__(self, patience=5, min_delta=0.01):
+        """
+        patience: nº de épocas sin mejorar antes de parar
+        min_delta: mejora mínima requerida
+        """
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_loss = float('inf')
+        self.counter = 0
+        self.best_state = None
+
+    def step(self, loss, model):
+        if loss + self.min_delta < self.best_loss:
+            self.best_loss = loss
+            self.counter = 0
+            self.best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        else:
+            self.counter += 1
+
+        return self.counter >= self.patience
+
+    def restore(self, model):
+        if self.best_state is not None:
+            model.load_state_dict(self.best_state)
 
 # ========================== ENTRENAMIENTO Y EVALUACION ============================
 def train(model, train_loader, epochs, learning_rate, device):
@@ -239,7 +278,6 @@ def test(model, test_loader, device):
             correct += (predicted == labels).sum().item()
 
     accuracy = 100 * correct / total
-    print(f"Test Accuracy: {accuracy:.2f}%")
     return accuracy
 
 # ========================== ENTRENAMIENTO KD ============================
@@ -251,6 +289,8 @@ def train_knowledge_distillation(teacher, student, train_loader, epochs, learnin
     student.to(device)
     teacher.eval()  # Teacher set to evaluation mode
     student.train() # Student to train mode
+
+    early_stopper = EarlyStopping(patience=3)
 
     for epoch in range(epochs):
         running_loss = 0.0
@@ -279,7 +319,36 @@ def train_knowledge_distillation(teacher, student, train_loader, epochs, learnin
             optimizer.step()
             running_loss += loss.item()
 
-        print(f"Epoch {epoch+1}/{epochs}, Loss: {running_loss / len(train_loader)}")
+        epoch_loss = running_loss / len(train_loader)
+        print(f"Epoch {epoch+1}/{epochs}, Loss: {epoch_loss}")
+
+        if early_stopper.step(epoch_loss, student):
+            print("Early stopping triggered!")
+            break
+
+    # Restaurar mejores pesos
+    early_stopper.restore(student)
+
+def train_kd_wandb(teacher, student):
+    wandb.init()
+    config = wandb.config
+
+    train_knowledge_distillation(
+        teacher=teacher,
+        student=student,
+        train_loader=train_loader,
+        epochs=config.epochs,
+        learning_rate=config.learning_rate,
+        T=config.T,
+        alpha=config.alpha,
+        device=device
+    )
+
+    # Evaluación del modelo estudiante
+    acc = test(student, test_loader, device)
+
+    # Reportar métrica al sweep
+    wandb.log({"accuracy": acc})
 
 def load_model(model_class, path, device):
     """Carga un modelo si el archivo existe, o devuelve uno nuevo."""
@@ -299,56 +368,85 @@ if __name__ == "__main__":
 
     if len(sys.argv)>1 and sys.argv[1] == "full":
         torch.manual_seed(42)
-        nn_deep = DeepNN_Adaptada(num_classes=10).to(device)
-        train(nn_deep, train_loader, epochs=100, learning_rate=0.01, device=device)
+        teacher = DeepNN_Adaptada(num_classes=10).to(device)
+        train(teacher, train_loader, epochs=50, learning_rate=0.01, device=device)
 
         torch.manual_seed(42)
-        nn_light = LightNN_Adaptada(num_classes=10).to(device)
-        torch.manual_seed(42)
-        total_params_deep = "{:,}".format(sum(p.numel() for p in nn_deep.parameters()))
-        print(f"DeepNN parameters: {total_params_deep}")
-        total_params_light = "{:,}".format(sum(p.numel() for p in nn_light.parameters()))
-        print(f"LightNN parameters: {total_params_light}")
-        train(nn_light, train_loader, epochs=100, learning_rate=0.01, device=device)
+        student = LightNN_Adaptada(num_classes=10).to(device)
 
-        torch.save(nn_deep.state_dict(), "model/DeepNN.pth")
-        torch.save(nn_light.state_dict(), "model/student_no_kd.pth")
+        train(student, train_loader, epochs=10, learning_rate=0.01, device=device)
+
+        torch.save(teacher.state_dict(), "model/DeepNN_Adaptada.pth")
+        torch.save(student.state_dict(), "model/student_no_kd_Adaptada.pth")
 
     else:
-        nn_deep = load_model(DeepNN, "model/DeepNN.pth", device)
-        nn_light = load_model(LightNN, "model/student_no_kd.pth", device)
+        teacher = load_model(DeepNN_Adaptada, "model/DeepNN_Adaptada.pth", device)
+        student = load_model(LightNN_Adaptada, "model/student_no_kd_Adaptada.pth", device)
 
-    test_accuracy_deep = test(nn_deep, test_loader, device)
-    test_accuracy_light_ce = test(nn_light, test_loader, device)
+    teacher_params = "{:,}".format(sum(p.numel() for p in teacher.parameters()))
+    print(f"Teacher Params: {teacher_params}")
+    student_params = "{:,}".format(sum(p.numel() for p in student.parameters()))
+    print(f"Student Params: {student_params}")
+    test_accuracy_deep = test(teacher, test_loader, device)
+    test_accuracy_light_ce = test(student, test_loader, device)
     print(f"Teacher accuracy: {test_accuracy_deep:.2f}%")
     print(f"Student accuracy: {test_accuracy_light_ce:.2f}%")
 
     # --- Experimento con distintos pesos alpha ---
-    alphas = [0.75]
-    Ts = [20]
-    results = {}
+    # alphas = [0.75]
+    # Ts = [20]
+    # results = {}
 
-    for alpha in alphas:
-        results[alpha] = {}
-        for T in Ts:
-            new_nn_light = LightNN_Adaptada(num_classes=10).to(device)
-            print(f"\n=== Training student with alpha={alpha} / T={T} ===")
-            train_knowledge_distillation(
-                teacher=nn_deep,
-                student=new_nn_light.to(device),
-                train_loader=train_loader,
-                epochs=100,
-                learning_rate=0.01,
-                T=T,
-                alpha=alpha,
-                device=device
-            )
-            test_accuracy_light_ce_and_kd = test(new_nn_light, test_loader, device)
-            results[alpha][T] = test_accuracy_light_ce_and_kd
-            print(f"Student accuracy (alpha={alpha} / T={T}): {test_accuracy_light_ce_and_kd:.2f}%")
+    # for alpha in alphas:
+    #     results[alpha] = {}
+    #     for T in Ts:
+    #         new_student = LightNN_Adaptada(num_classes=10).to(device)
+    #         print(f"\n=== Training student with alpha={alpha} / T={T} ===")
+    #         train_knowledge_distillation(
+    #             teacher=teacher,
+    #             student=new_student.to(device),
+    #             train_loader=train_loader,
+    #             epochs=50,
+    #             learning_rate=0.01,
+    #             T=T,
+    #             alpha=alpha,
+    #             device=device
+    #         )
+    #         test_accuracy_light_ce_and_kd = test(new_student, test_loader, device)
+    #         results[alpha][T] = test_accuracy_light_ce_and_kd
+    #         print(f"Student accuracy (alpha={alpha} / T={T}): {test_accuracy_light_ce_and_kd:.2f}%")
+    #
+    # print("\n=== Summary ===")
+    # for alpha, temp_dict in results.items():
+    #     for T, acc in temp_dict.items():
+    #         print(f"α={alpha:.2f} / T={T} → Accuracy: {acc:.2f}%")
 
-    print("\n=== Summary ===")
-    for alpha, temp_dict in results.items():
-        for T, acc in temp_dict.items():
-            print(f"α={alpha:.2f} / T={T} → Accuracy: {acc:.2f}%")
 
+# ============================ COSAS WANDB ============================
+
+    sweep_config = {
+        'method': 'bayes',  # bayesian, random, grid
+        'metric': {
+            'name': 'accuracy',
+            'goal': 'maximize'
+        },
+        'parameters': {
+            'alpha': {
+                'min': 0.1,
+                'max': 0.9
+            },
+            'T': {
+                'min': 1,
+                'max': 20
+            },
+            'learning_rate': {
+                'values': [0.001]
+            },
+            'epochs': {
+                'values': [10]
+            }
+        }
+    }
+
+    sweep_id = wandb.sweep(sweep_config, project="Basic_Knowledge_Distillation_Reentrenando")
+    wandb.agent(sweep_id, lambda:train_kd_wandb(teacher, student))
