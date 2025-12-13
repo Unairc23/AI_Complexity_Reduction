@@ -2,43 +2,64 @@ import numpy as np
 import h5py
 from matplotlib import pyplot as plt
 
-def cargarDatos():
-    f = h5py.File('NIST_Samples/NIST_Samples.mat','r')
-    data = f['h_AAplant_2G']
+def cargarDatos(dset='h_AAplant_int_5G'):
+    f = h5py.File("NIST_Samples/NIST_Samples.mat",'r')
+    data = f[dset]
     data = np.array(data) # For converting to a NumPy array
-    print (data)
+    print (f"Shape original: {data.shape}")
     return data
 
-def preprocesarDatos(data, size):
-    data_clean = data[:, :size]
-
-    print(data_clean.shape)
+def preprocesarDatos(data, window, stride, snr_db=20):
+    data_clean = data[:, :128]
+    print(f"Eliminando valores τ para evitar NaN: {data_clean.shape}")
 
     data_complex = data_clean['real'] + 1j * data_clean['imag']
     data_complex = np.nan_to_num(data_complex, nan=0.0)
 
-    mag = np.abs(data_complex)  # magnitud para imagen real
-    mag = mag / np.max(mag)
+    imagenes = []
+    imagenes_ruido = []
+    for t in range(0, data_complex.shape[0]-window, stride):
+        img = data_complex[t:t + window, :]
+        img = np.abs(img)
+        eps = 1e-12
+        img = 10 * np.log10(img + eps) # Epsilon para evitar hacer log(0)
+        img = np.clip(img, -60, 0) # Es raro que haya informacion por debajo de -60db, sueñe ser ruido
+        img = (img + 60) / 60 # Normalizar los valores para que el modelo pueda aprender mejor
+        img_ruido = añadir_awgn(img, snr_db)
+        imagenes.append(img[..., np.newaxis])
+        imagenes_ruido.append(img_ruido[..., np.newaxis])
 
-    Y = mag.shape[0]
-    nImagenes = Y // size
-    mag = mag[:nImagenes * size, :]  # recortar filas extra
+    print(f"Numero de imagenes: {imagenes.__sizeof__()}")
+    return imagenes, imagenes_ruido
 
-    images = mag.reshape(nImagenes, size, size)
-
-    return images
+def añadir_awgn(señal, snr_db):
+    p_señal = np.mean(señal ** 2)
+    snr_linear = 10 ** (snr_db / 10)
+    p_ruido = p_señal / snr_linear
+    ruido = np.random.normal(0, np.sqrt(p_ruido), señal.shape)
+    return señal + ruido
 
 if __name__ == '__main__':
-    data = cargarDatos()
-    images = preprocesarDatos(data, 128)
+    dset = 'h_AAplant_int_5G'
+    snr_db = 20
 
-    fig, axes = plt.subplots(3, 3, figsize=(8, 8))
+    data = cargarDatos(dset)
+    imagenes, imagenes_ruido = preprocesarDatos(data, 128, 16, snr_db)
+
+    fig, axes = plt.subplots(2, 1, figsize=(8, 8))
     axes = axes.flatten()
-    for i in range(9):
-        im = axes[i].imshow(images[i], cmap='viridis')
-        axes[i].axis('off')
-        # Agregar barra de color a cada imagen
-        plt.colorbar(im, ax=axes[i], fraction=0.046, pad=0.04)
 
-    plt.tight_layout()
+    im = axes[0].imshow(imagenes[0], cmap='viridis')
+    plt.colorbar(im, ax=axes[0], fraction=0.046, pad=0.04)
+    im = axes[1].imshow(imagenes_ruido[0], cmap='viridis')
+    plt.colorbar(im, ax=axes[1], fraction=0.046, pad=0.04)
+
     plt.show()
+
+
+
+    np.save(f'data/NIST_{dset}_imagenes.npy', imagenes)
+    print(f"Imagenes guardadas en data/NIST_{dset}_imagenes.npy")
+
+    np.save(f'data/NIST_{dset}_imagenes_snr_{snr_db}.npy', imagenes)
+    print(f"Imagenes con SNR {snr_db} guardadas en data/NIST_{dset}_imagenes_snr_{snr_db}.npy")
