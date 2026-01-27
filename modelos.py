@@ -38,11 +38,13 @@ class LightNN(nn.Module):
             nn.Dropout(0.1),
             nn.Linear(256, num_classes)
         )
+
     def forward(self, x):
         x = self.features(x)
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
+
 
 # Student de mayor tamaño siguiendo especificaciones de un paper
 class LightNN_Adaptada(nn.Module):
@@ -187,3 +189,24 @@ class DeepNN_Adaptada(nn.Module):
         x = torch.flatten(x, 1)
         x = self.classifier(x)
         return x
+
+# https://github.com/opendenoising/opendenoising-benchmark/tree/master
+class DnCNN(nn.Module):
+    def __init__(self, depth=5, n_filters=64, kernel_size=3, n_channels=1):
+        super(DnCNN, self).__init__()
+        layers = [
+            nn.Conv2d(in_channels=n_channels, out_channels=n_filters, kernel_size=kernel_size, padding=1, bias=False),
+            nn.ReLU(inplace=True)
+        ]
+        for _ in range(depth - 2):
+            layers.append(nn.Conv2d(in_channels=n_filters, out_channels=n_filters, kernel_size=kernel_size,
+                                    padding=1, bias=False))
+            layers.append(nn.BatchNorm2d(n_filters))
+            layers.append(nn.ReLU(inplace=True))
+        layers.append(nn.Conv2d(in_channels=n_filters, out_channels=n_channels, kernel_size=kernel_size,
+                                padding=1, bias=False))
+        self.dncnn = nn.Sequential(*layers)
+
+    def forward(self, x):
+        out = self.dncnn(x)
+        return out

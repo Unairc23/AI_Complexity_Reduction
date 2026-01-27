@@ -44,7 +44,8 @@ def añadir_awgn(señal, snr_db):
 
 if __name__ == '__main__':
     dset = 'h_AAplant_int_5G'
-    snr_db = 5
+    snr_db = 10
+    snrs = [5, 10, 20]
 
     data = cargarDatos(dset)
     imagenes, imagenes_ruido = preprocesarDatos(data, 128, 16, snr_db)
@@ -59,10 +60,22 @@ if __name__ == '__main__':
 
     plt.show()
 
-
+    imagenes_ruido_variable = []
+    imagenes_bien_variable = []
+    for snr in snrs:
+        imagenes, imagenes_ruido = preprocesarDatos(data, 128, 16, snr_db)
+        imagenes_ruido_variable = imagenes_ruido_variable + imagenes_ruido
+        imagenes_bien_variable = imagenes_bien_variable + imagenes
+        print(f"Dataset combinado: {len(imagenes_ruido_variable)}")
 
     np.save(f'data/NIST_{dset}_imagenes.npy', imagenes)
     print(f"Imagenes guardadas en data/NIST_{dset}_imagenes.npy")
 
     np.save(f'data/NIST_{dset}_imagenes_snr_{snr_db}.npy', imagenes_ruido)
     print(f"Imagenes con SNR {snr_db} guardadas en data/NIST_{dset}_imagenes_snr_{snr_db}.npy")
+
+    np.save(f'data/NIST_{dset}_imagenes_snr_variable.npy', imagenes_ruido_variable)
+    print(f"Imagenes con SNR {snrs} guardadas en data/NIST_{dset}_imagenes_snr_variable.npy")
+
+    np.save(f'data/NIST_{dset}_imagenes_limpias_variable.npy', imagenes_ruido_variable)
+    print(f"Imagenes limpias con repetición guardadas en data/NIST_{dset}_imagenes_limpias_variable.npy")
