@@ -15,6 +15,7 @@
     {
       "t_layers": -2,
       "s_layers": -2
-    }
+    },
+    "patience": 5
   }
 }

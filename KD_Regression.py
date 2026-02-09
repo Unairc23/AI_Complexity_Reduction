@@ -80,6 +80,7 @@ test_loader = torch.utils.data.DataLoader(test_ds, batch_size=128, shuffle=False
 def train(model, train_loader, epochs, learning_rate, device):
     criterion = nn.MSELoss()
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    early_stopper = EarlyStoppingLoss(patience=conf["KDR"]["patience"])
 
     model.train()
 
@@ -102,12 +103,20 @@ def train(model, train_loader, epochs, learning_rate, device):
             running_loss += loss.item()
 
         train_loss = running_loss / len(train_loader)
-        print(f"Epoch {epoch+1}/{epochs} | Loss: {train_loss:.8f}")
+        val_loss = evaluate(model, val_loader, device)
+        print(f"Epoch {epoch+1}/{epochs} | Train_Loss: {train_loss:.8f} | Val_Loss: {val_loss:.8f}")
+
+        if early_stopper.step(val_loss, model):
+            print("Parando el entrenamiento")
+            break
+
+    early_stopper.restore(model)
 
 def train_knowledge_distillation(teacher, student, train_loader, epochs, learning_rate, teacher_threshold, alpha, device):
     #Todo: Ahora mismo el teacher calcula el mse de todo el batch, no solo de la prediccion actual
     mse_loss = nn.MSELoss()
     optimizer = optim.Adam(student.parameters(), lr=learning_rate)
+    early_stopper = EarlyStoppingLoss()
 
     teacher.to(device)
     student.to(device)
@@ -144,13 +153,21 @@ def train_knowledge_distillation(teacher, student, train_loader, epochs, learnin
             running_loss += loss.item()
 
         epoch_loss = running_loss / len(train_loader)
-        print(f"Epoch {epoch + 1}/{epochs} | Loss: {epoch_loss:.8f}")
+        val_loss = evaluate(student, val_loader, device)
+        print(f"Epoch {epoch + 1}/{epochs} | Train_Loss: {epoch_loss:.8f} | Val_Loss: {val_loss:.8f}")
+
+        if early_stopper.step(val_loss, student):
+            print("Early stopping triggered!")
+            break
+
+    early_stopper.restore(student)
 
 def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate, alpha, device):
     #Todo: - Implementar bottleneck para los casos en los que la arquitectura de teacher y student sea diferente.
     # (KNOWLEDGE DISTILLATION FOR SPEECH DENOISING BY LATENT REPRESENTATION ALIGNMENT WITH COSINE DISTANCE)
     mse_loss = nn.MSELoss()
     optimizer = optim.Adam(student.parameters(), lr=learning_rate)
+    early_stopper = EarlyStoppingLoss()
 
     teacher.to(device)
     student.to(device)
@@ -183,12 +200,56 @@ def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate
             running_loss += loss.item()
 
         epoch_loss = running_loss / len(train_loader)
+        val_loss = evaluate(student, val_loader, device)
         print(f"Epoch {epoch + 1}/{epochs} | Loss: {epoch_loss:.8f}")
+
+        if early_stopper.step(val_loss, student):
+            print("Early stopping triggered!")
+            break
+
+    early_stopper.restore(student)
 
 def cosine_kd_loss(h_s, h_t):  # h_s, h_t: [B, C, H, W]
     h_s = F.normalize(h_s.flatten(1), dim=1)
     h_t = F.normalize(h_t.flatten(1), dim=1)
     return 1 - (h_s * h_t).sum(dim=1).mean()
+
+# ============================================== Early stopping ========================================================
+def evaluate(model, loader, device):
+    # TODO: Usar otra metrica (psn, ssim)
+    model.eval()
+    mse = nn.MSELoss()
+    total_loss = 0.0
+
+    with torch.no_grad():
+        for X, Y in loader:
+            X, Y = X.to(device), Y.to(device)
+            pred = model(X)
+            total_loss += mse(pred, Y).item()
+
+    return total_loss / len(loader)
+
+class EarlyStoppingLoss:
+    def __init__(self, patience=5, min_delta=0.0):
+        self.patience = patience
+        self.min_delta = min_delta
+        self.best_loss = -float("inf")
+        self.counter = 0
+        self.best_state = None
+
+    def step(self, val_loss, model):
+        if val_loss < self.best_loss + self.min_delta:
+            self.best_loss = val_loss
+            self.counter = 0
+            self.best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
+        else:
+            self.counter += 1
+
+        return self.counter >= self.patience
+
+    def restore(self, model):
+        if self.best_state is not None:
+            model.load_state_dict(self.best_state)
 
 # ============================================== Carga y Parser ========================================================
 def load_model(model, path, device):
