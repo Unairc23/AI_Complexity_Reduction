@@ -16,6 +16,7 @@ import random, numpy as np
 
 # Todo: Implementar / quitar modelos no compatibles con regresion
 from modelos import DeepNN, LightNN, LightNN_Adaptada, DeepNN_Adaptada, load_resnet, DnCNN, ResNetDenoiser
+from utils import *
 
 with open("config.json", "r", encoding="utf-8") as f:
     conf = json.load(f)
@@ -37,9 +38,7 @@ MODEL_REGISTRY = {
 }
 
 # ============================================== BSD500 Loader ========================================================
-
 # Todo: Eliminar / mover a otro lugar los metodos de las imagenes BSD500
-
 
 class NPYDataset(Dataset):
     def __init__(self, X, Y, transform=None):
@@ -276,7 +275,6 @@ def cosine_kd_loss(h_s, h_t):  # h_s, h_t: [B, C, H, W]
 
 # ============================================== Early stopping ========================================================
 def evaluate(model, loader, device):
-    # TODO: Probar (ssim)
     model.eval()
     mse = nn.MSELoss()
     total_loss = 0.0
@@ -334,169 +332,26 @@ class EarlyStoppingLoss:
         if self.best_state is not None:
             model.load_state_dict(self.best_state)
 
-# ============================================== Carga y Parser ========================================================
+# ============================================== CARGA MODELOS ========================================================
 def load_model(model, path, device):
-    # Todo: Arreglar esto
+    # Todo: Arreglar esto (Como tal funciona, pero cuidado de no cargar con diferentes tamaños al guardado)
     """Carga un modelo si el archivo existe, o devuelve uno nuevo."""
     if os.path.exists(path):
         model.load_state_dict(torch.load(path, map_location=device))
-        print(f" Modelo cargado desde {path}")
+        print(f"Modelo cargado desde {path}")
     else:
-        print(f" No se encontró el archivo {path}, se inicializa un modelo nuevo.")
+        print(f"No se encontó el archivo {path}, se inicializa un modelo nuevo.")
     return model
-
-def estimate_snr_db(noisy, clean, eps=1e-12):
-    signal_power = np.mean(clean ** 2)
-    noise_power = np.mean((noisy - clean) ** 2)
-    return 10.0 * np.log10((signal_power + eps) / (noise_power + eps))
-
-def calcular_ruido(señal_norm, señal_ruido_norm):
-    ruido = señal_ruido_norm - señal_norm
-    p_señal = np.mean(np.abs(señal_norm) ** 2)
-    p_ruido = np.mean(np.abs(ruido) ** 2)
-    if p_ruido == 0:
-        return np.inf
-    return 10 * np.log10(p_señal / p_ruido)
-
-# ==========================================Representar graficamente====================================================
-# TODO: Igual mover metodos como este a una clase especifica para evitar centrar todo aquí
-def graficar(model, dataset, device, idx=0, modelName="modelo", modo="magnitud"):
-
-    model.eval()
-
-    x, y = dataset[idx]                # (C, H, W)
-    x_in = x.unsqueeze(0).to(device)   # (1, C, H, W)
-
-    with torch.no_grad():
-        y_pred = model(x_in)
-
-    # Mover a numpy
-    x = x.cpu().numpy()
-    y = y.cpu().numpy()
-    np.save(f"{modelName}_input.npy", x)
-    y_pred = y_pred.squeeze(0).cpu().numpy()
-
-    if modo == "magnitud":
-        # Calcular magnitud
-        x_vis = np.sqrt(x[0]**2 + x[1]**2)
-        y_vis = np.sqrt(y[0]**2 + y[1]**2)
-        ypred_vis = np.sqrt(y_pred[0]**2 + y_pred[1]**2)
-
-        fig, axs = plt.subplots(1, 3, figsize=(12, 4))
-
-        axs[0].imshow(x_vis, cmap="viridis")
-        axs[0].set_title("Entrada ruidosa (|z|)")
-
-        axs[1].imshow(y_vis, cmap="viridis")
-        axs[1].set_title("Objetivo limpio (|z|)")
-
-        axs[2].imshow(ypred_vis, cmap="viridis")
-        axs[2].set_title(f"Reconstrucción {modelName} (|z|)")
-
-        for ax in axs:
-            ax.axis("off")
-
-        plt.tight_layout()
-        plt.show()
-
-    elif modo == "canales":
-        fig, axs = plt.subplots(3, 2, figsize=(8, 12))
-
-        # Entrada
-        axs[0, 0].imshow(x[0], cmap="viridis")
-        axs[0, 0].set_title("Entrada - Real")
-
-        axs[0, 1].imshow(x[1], cmap="viridis")
-        axs[0, 1].set_title("Entrada - Imaginario")
-
-        # Objetivo
-        axs[1, 0].imshow(y[0], cmap="viridis")
-        axs[1, 0].set_title("Objetivo - Real")
-
-        axs[1, 1].imshow(y[1], cmap="viridis")
-        axs[1, 1].set_title("Objetivo - Imaginario")
-
-        # Reconstrucción
-        axs[2, 0].imshow(y_pred[0], cmap="viridis")
-        axs[2, 0].set_title(f"Reconstrucción {modelName} - Real")
-
-        axs[2, 1].imshow(y_pred[1], cmap="viridis")
-        axs[2, 1].set_title(f"Reconstrucción {modelName} - Imaginario")
-
-        for ax in axs.flatten():
-            ax.axis("off")
-
-        plt.tight_layout()
-        plt.show()
-
-def plot_training_curves(histories, title="Training curves"):
-    plt.figure(figsize=(10,6))
-    eps = 1e-12
-
-    for name, (train_hist, val_hist) in histories.items():
-        train_vals = np.maximum(np.asarray(train_hist, dtype=np.float64), eps)
-        val_vals = np.maximum(np.asarray(val_hist, dtype=np.float64), eps)
-        plt.plot(train_vals, linestyle="--", label=f"{name} - Train")
-        plt.plot(val_vals, linestyle="-", label=f"{name} - Val")
-
-    plt.xlabel("Epoch")
-    plt.ylabel("MSE Loss")
-    plt.yscale("log")
-    plt.title(title)
-    plt.legend()
-    plt.grid(True)
-    plt.show()
-
-def guardar_training_curves(histories):
-
-    wb = openpyxl.Workbook()
-
-    ws_wide = wb.active
-    ws_wide.title = "wide"
-
-    header = ["epoch"]
-    max_len = 0
-    normalized = {}
-
-    for name, (train_hist, val_hist) in histories.items():
-        train_vals = list(train_hist)
-        val_vals = list(val_hist)
-        normalized[name] = (train_vals, val_vals)
-        max_len = max(max_len, len(train_vals), len(val_vals))
-        header.extend([f"{name}_train", f"{name}_val"])
-
-    ws_wide.append(header)
-
-    for epoch_idx in range(max_len):
-        row = [epoch_idx + 1]
-        for name in histories.keys():
-            train_vals, val_vals = normalized[name]
-            train_value = train_vals[epoch_idx] if epoch_idx < len(train_vals) else None
-            val_value = val_vals[epoch_idx] if epoch_idx < len(val_vals) else None
-            row.extend([train_value, val_value])
-        ws_wide.append(row)
-
-    ws_long = wb.create_sheet(title="long")
-    ws_long.append(["model", "epoch", "train_loss", "val_loss"])
-
-    for name, (train_vals, val_vals) in normalized.items():
-        local_max = max(len(train_vals), len(val_vals))
-        for epoch_idx in range(local_max):
-            train_value = train_vals[epoch_idx] if epoch_idx < len(train_vals) else None
-            val_value = val_vals[epoch_idx] if epoch_idx < len(val_vals) else None
-            ws_long.append([name, epoch_idx + 1, train_value, val_value])
-
-    fechaHora = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_path = f"results/resultados_{fechaHora}.xlsx"
-    wb.save(output_path)
-    print(f"Curvas de entrenamiento guardadas en {output_path}")
 
 if __name__ == "__main__":
     # Creo que esta linea solo es encesaria en windows, linux hace un fork
     torch.multiprocessing.freeze_support()
 
     tModel = conf["KDR"]["tModel"]
+    t_tamaño = conf["KDR"]["tDepth"]
     sModel = conf["KDR"]["sModel"]
+    s_tamaño = conf["KDR"]["sDepth"]
+    snr = conf["Data"]["Snr_db"]
 
     teacher = MODEL_REGISTRY[tModel]["Teacher"]().to(device)
     student = MODEL_REGISTRY[sModel]["Student"]().to(device)
@@ -523,22 +378,23 @@ if __name__ == "__main__":
         print("================ Entrenando no_KD_student ================")
         student_hist = train(model=student, train_loader=train_loader, epochs=conf["KDR"]["sEpoch"], learning_rate=conf["KDR"]["lr"],
               device=device)
-        torch.save(teacher.state_dict(), f"model/teacher_{tModel}.pth")
-        torch.save(student.state_dict(), f"model/student_{sModel}.pth")
+
+        torch.save(teacher.state_dict(), f"model/{tModel}_{t_tamaño}l_{snr}snr.pth")
+        torch.save(student.state_dict(), f"model/{sModel}_{s_tamaño}l_{snr}snr.pth")
     else:
-        teacher = load_model(teacher, path=f"model/{tModel}.pth", device=device)
-        student = load_model(student, path=f"model/{sModel}.pth", device=device)
+        teacher = load_model(teacher, path=f"model/{tModel}_{t_tamaño}l_{snr}snr.pth", device=device)
+        student = load_model(student, path=f"model/{sModel}_{s_tamaño}l_{snr}snr.pth", device=device)
 
     # Comparar tamaño teacher / modelo sin destilar
     teacher_params = "{:,}".format(sum(p.numel() for p in teacher.parameters()))
-    teacher_size = os.path.getsize(f"model/teacher_{tModel}.pth") / 1024 ** 2
-    print(f"Teacher Params: {teacher_params}")
-    print(f"Teacher Size: {teacher_size}")
+    teacher_size = os.path.getsize(f"model/{tModel}_{t_tamaño}l_{snr}snr.pth") / 1024 ** 2
+    print(f"\nTeacher Params: {teacher_params}")
+    print(f"Teacher Size: {teacher_size} \n")
 
     student_params = "{:,}".format(sum(p.numel() for p in student.parameters()))
-    student_size = os.path.getsize(f"model/student_{tModel}.pth") / 1024 ** 2
+    student_size = os.path.getsize(f"model/{sModel}_{s_tamaño}l_{snr}snr.pth") / 1024 ** 2
     print(f"Student Params: {student_params}")
-    print(f"Student Size: {student_size}")
+    print(f"Student Size: {student_size} \n")
 
     print(f"Diferencia de tamaño: {teacher_size / student_size:.2f}x ({teacher_size:.2f}MB -> {student_size:.2f}MB)")
 
@@ -549,17 +405,27 @@ if __name__ == "__main__":
     graficar(student, test_ds, device, idx=idx, modelName="no_kd_student", modo="canales")
     graficar(teacher, test_ds, device, idx=idx, modelName="teacher", modo="canales")
 
-    # xs = []
-    snrs = []
+    snr = []
+    snrT = []
+    snrS = []
     for data in test_ds:
         x, y = data
+        snr_db_T = calcular_ruido(
+            señal_ruido_norm=teacher(x.unsqueeze(0).to(device)).squeeze(0).detach().cpu().numpy(),
+            señal_norm=y.numpy()
+        )
+        snr_db_S = calcular_ruido(
+            señal_ruido_norm=student(x.unsqueeze(0).to(device)).squeeze(0).detach().cpu().numpy(),
+            señal_norm=y.numpy()
+        )
         snr_db = calcular_ruido(señal_ruido_norm=x.numpy(), señal_norm=y.numpy())
-        snrs.append(snr_db)
-        xs.append(x.numpy()[1,:,:])
-    print(f"SNR medio del dataset de test: {np.mean(snrs):.2f} dB")
-    # xs = np.stack(xs)
-    # np.save("input.npy", xs)
-    # print(f"Guardadas {xs.shape} muestras X en input.npy")
+
+        snr.append(snr_db)
+        snrT.append(snr_db_T)
+        snrS.append(snr_db_S)
+    print(f"SNR medio del dataset de test: {np.mean(snr):.2f} dB")
+    print(f"SNR medio del teacher en test: {np.mean(snrT):.2f} dB")
+    print(f"SNR medio del no_KD_student en test: {np.mean(snrS):.2f} dB")
 
     # ============================================== KD clasica ========================================================
     print("================ Entrenando kd_student ================")
@@ -589,11 +455,18 @@ if __name__ == "__main__":
 
     graficar(kd_student_feature, test_ds, device, idx=idx, modelName="kd_student_feature", modo="canales")
 
-    historial = {
-        "Teacher": teacher_hist,
-        "Student": student_hist,
-        "KD": kd_hist,
-        "FKD": fkd_hist
-    }
+    # Carga el historial del teacher / student solo si se han entrenado, si se han cargado no porque no están guardados en ningun lado
+    if conf["KDR"]["train"]:
+        historial = {
+            "Teacher": teacher_hist,
+            "Student": student_hist,
+            "KD": kd_hist,
+            "FKD": fkd_hist
+        }
+    else:
+        historial = {
+            "KD": kd_hist,
+            "FKD": fkd_hist
+        }
     plot_training_curves(historial)
     guardar_training_curves(historial)
