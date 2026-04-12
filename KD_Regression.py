@@ -8,6 +8,7 @@ import openpyxl
 import torch
 import torch.nn as nn
 import torch.optim as optim
+import torch.ao.nn.quantized as nnq
 from PIL import Image
 from matplotlib import pyplot as plt
 from torch.utils.data import random_split, Dataset
@@ -17,6 +18,7 @@ import random, numpy as np
 # Todo: Implementar / quitar modelos no compatibles con regresion
 from modelos import DeepNN, LightNN, LightNN_Adaptada, DeepNN_Adaptada, load_resnet, DnCNN, ResNetDenoiser
 from utils import *
+from Cuantizacion import *
 
 with open("config.json", "r", encoding="utf-8") as f:
     conf = json.load(f)
@@ -34,6 +36,10 @@ MODEL_REGISTRY = {
     "resnet_denoiser": {
         "Student": lambda: ResNetDenoiser(in_channels=2, base_channels=16),
         "Teacher": lambda: ResNetDenoiser(in_channels=2, base_channels=32)
+    },
+    "UNet": {
+        "Student": lambda: UNetDenoiser(in_channels=2, base_channels=32),
+        "Teacher": lambda: UNetDenoiser(in_channels=2, base_channels=64)
     }
 }
 
@@ -79,6 +85,7 @@ if (contains(conf["KDR"]["X"], "bsd500")):
 
 X = np.load(conf["KDR"]["X"])
 Y = np.load(conf["KDR"]["Y"])
+batch_size = conf["KDR"]["batch_size"]
 
 full_dataset = NPYDataset(X, Y)
 
@@ -92,9 +99,9 @@ train_ds, val_ds, test_ds = random_split(
     [train_size, val_size, test_size]
 )
 
-train_loader = torch.utils.data.DataLoader(train_ds, batch_size=64, shuffle=True, num_workers=0)
-val_loader = torch.utils.data.DataLoader(val_ds, batch_size=64, shuffle=False, num_workers=0)
-test_loader = torch.utils.data.DataLoader(test_ds, batch_size=64, shuffle=False, num_workers=0)
+train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
 # ====================================== Entrenamiento de los modelos =================================================
 def train(model, train_loader, epochs, learning_rate, device):
@@ -406,26 +413,48 @@ if __name__ == "__main__":
     graficar(teacher, test_ds, device, idx=idx, modelName="teacher", modo="canales")
 
     snr = []
-    snrT = []
-    snrS = []
-    for data in test_ds:
-        x, y = data
-        snr_db_T = calcular_ruido(
-            señal_ruido_norm=teacher(x.unsqueeze(0).to(device)).squeeze(0).detach().cpu().numpy(),
-            señal_norm=y.numpy()
-        )
-        snr_db_S = calcular_ruido(
-            señal_ruido_norm=student(x.unsqueeze(0).to(device)).squeeze(0).detach().cpu().numpy(),
-            señal_norm=y.numpy()
-        )
+    mseT = evaluate(teacher, val_loader, device)
+    mseS = evaluate(student, val_loader, device)
+    for x,y in val_loader: # For simple para comprobar que el ruido está correctamente aplicado en el datasr (se puede quitar)
         snr_db = calcular_ruido(señal_ruido_norm=x.numpy(), señal_norm=y.numpy())
-
         snr.append(snr_db)
-        snrT.append(snr_db_T)
-        snrS.append(snr_db_S)
+    print(f"MSE teacher: {mseT:.8f}")
+    print(f"MSE student: {mseS:.8f}")
     print(f"SNR medio del dataset de test: {np.mean(snr):.2f} dB")
-    print(f"SNR medio del teacher en test: {np.mean(snrT):.2f} dB")
-    print(f"SNR medio del no_KD_student en test: {np.mean(snrS):.2f} dB")
+
+    # ============================================== Cuantizar ========================================================
+
+    if (conf["KDR"]["cuantizar"]):
+        print("============================ Cuantizando ============================")
+
+        teacher_q = cuantizar_estatica(teacher, device, val_loader)
+        student_q = cuantizar_estatica(student, device, val_loader)
+        cpu = torch.device("cpu")
+        teacher_q.to(cpu)
+        student_q.to(cpu) # La cuantización se aplica sobre cpu siempre, pasar modelos explicitamente a gpu
+
+        # Comparacion de tamaños
+        torch.save(teacher_q.state_dict(), "model/teacher_q.pth")
+        torch.save(student_q.state_dict(), "model/student_q.pth")
+
+        quantized_teacher = os.path.getsize("model/teacher_q.pth") / 1024 ** 2
+        print(f"Quantized Teacher Params: {quantized_teacher}")
+        quantized_student = os.path.getsize("model/student_q.pth") / 1024 ** 2
+        print(f"Quantized Student Params: {quantized_student}\n")
+
+
+        idx = int(conf["KDR"].get("plot_idx", 0))
+        idx = max(0, min(idx, len(test_ds) - 1))
+        print(f"Mostrando muestra de test idx={idx}\n")
+        graficar(teacher_q, test_ds, cpu, idx=idx, modelName="teacher_q", modo="canales")
+        graficar(student_q, test_ds, cpu, idx=idx, modelName="student_q", modo="canales")
+
+        mseTq = evaluate(teacher_q, val_loader, cpu)
+        mseSq = evaluate(student_q, val_loader, cpu)
+        print(f"MSE teacher: {mseTq:.8f}")
+        print(f"MSE student: {mseSq:.8f}")
+        print(f"Diferencia Teacher: {mseT - mseTq:.8f}")
+        print(f"Diferencia Student: {mseS - mseSq:.8f}")
 
     # ============================================== KD clasica ========================================================
     print("================ Entrenando kd_student ================")
