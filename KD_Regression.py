@@ -4,6 +4,7 @@ import datetime
 from glob import glob
 from operator import contains
 import openpyxl
+import wandb
 
 import torch
 import torch.nn as nn
@@ -25,8 +26,8 @@ with open("config.json", "r", encoding="utf-8") as f:
 
 MODEL_REGISTRY = {
     "DnCNN": {
-        "Student": lambda: DnCNN(depth=conf["KDR"]["sDepth"]),
-        "Teacher": lambda: DnCNN(depth=conf["KDR"]["tDepth"])
+        "Student": lambda: DnCNN(depth=conf["Model"]["sDepth"]),
+        "Teacher": lambda: DnCNN(depth=conf["Model"]["tDepth"])
     },
     "resnet_denoiser": {
         "Student": lambda: ResNetDenoiser(in_channels=2, base_channels=conf["Model"]["sDepth"]),
@@ -74,22 +75,33 @@ torch.backends.cudnn.benchmark = False
 # =============================================== Crear dataset ========================================================
 if (contains(conf["KDR"]["X"], "bsd500")):
     prepare_bsd500_dataset(conf)
-
-X = np.load(conf["KDR"]["X"])
-Y = np.load(conf["KDR"]["Y"])
 batch_size = conf["Model"]["batch_size"]
 
-full_dataset = NPYDataset(X, Y)
+# X = np.load(conf["KDR"]["X"])
+# Y = np.load(conf["KDR"]["Y"])
+#
+# full_dataset = NPYDataset(X, Y)
+#
+# total_size = len(full_dataset)
+# train_size = int(0.8 * total_size)
+# val_size = int(0.1 * total_size)
+# test_size = total_size - train_size - val_size
+#
+# train_ds, val_ds, test_ds = random_split(
+#     full_dataset,
+#     [train_size, val_size, test_size]
+# )
 
-total_size = len(full_dataset)
-train_size = int(0.8 * total_size)
-val_size = int(0.1 * total_size)
-test_size = total_size - train_size - val_size
+X_train = np.load(conf["KDR"]["X"].replace("imgs", "imgsTrain"))
+X_test = np.load(conf["KDR"]["X"].replace("imgs", "imgsTest"))
+X_val = np.load(conf["KDR"]["X"].replace("imgs", "imgsVal"))
+Y_train = np.load(conf["KDR"]["Y"].replace("imgs", "imgsTrain"))
+Y_test = np.load(conf["KDR"]["Y"].replace("imgs", "imgsTest"))
+Y_val = np.load(conf["KDR"]["Y"].replace("imgs", "imgsVal"))
 
-train_ds, val_ds, test_ds = random_split(
-    full_dataset,
-    [train_size, val_size, test_size]
-)
+train_ds = NPYDataset(X_train, Y_train)
+test_ds = NPYDataset(X_test, Y_test)
+val_ds = NPYDataset(X_val, Y_val)
 
 train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
 val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
@@ -144,11 +156,10 @@ def train(model, train_loader, epochs, learning_rate, device):
 
     return train_history, val_history
 
-def train_knowledge_distillation(teacher, student, train_loader, epochs, learning_rate, teacher_threshold, alpha, device):
-    #Todo: Ahora mismo el teacher calcula el mse de todo el batch, no solo de la prediccion actual
+def train_knowledge_distillation(teacher, student, train_loader, epochs, learning_rate, alpha, device, patience):
     mse_loss = nn.MSELoss()
     optimizer = optim.Adam(student.parameters(), lr=learning_rate)
-    early_stopper = EarlyStoppingLoss(patience=conf["Model"]["patience"])
+    early_stopper = EarlyStoppingLoss(patience=patience)
 
     teacher.to(device)
     student.to(device)
@@ -202,6 +213,12 @@ def train_knowledge_distillation(teacher, student, train_loader, epochs, learnin
 
         print(f"Epoch {epoch + 1}/{epochs} | Train_Loss: {epoch_loss:.8f} | Val_Loss: {val_loss:.8f}")
 
+        if(conf["KDR"]["wandb"]):
+            wandb.log({
+                "epoch": epoch + 1,
+                "mse": mse
+            })
+
         if early_stopper.step(val_loss, student):
             print("Early stopping triggered!")
             break
@@ -209,6 +226,49 @@ def train_knowledge_distillation(teacher, student, train_loader, epochs, learnin
     early_stopper.restore(student)
 
     return train_history, val_history
+
+def train_kd_wandb(teacher):
+    wandb.init(
+        config={
+            'model': conf["KDR"]["sModel"],
+            'sint': conf["Data"]["Sint"],
+            'mixedSNR': conf["Data"]["MixedSNR"],
+            'SNR': conf["Data"]["Snr_db"],
+            'tSize': conf["Model"]["tDepth"],
+            'sSize': conf["Model"]["sDepth"],
+        }
+    )
+    wandbConfig = wandb.config
+    kd_student = MODEL_REGISTRY[sModel]["Student"]().to(device)
+
+    # Se vuelven a crear aqui dentro para aplicar los parametros de wandb
+    train_loader = torch.utils.data.DataLoader(
+        train_ds,
+        batch_size=wandbConfig.batch_size,
+        shuffle=True,
+        num_workers=0
+    )
+
+    val_loader = torch.utils.data.DataLoader(
+        val_ds,
+        batch_size=wandbConfig.batch_size,
+        shuffle=False,
+        num_workers=0
+    )
+
+    train_knowledge_distillation(
+        teacher,
+        student=kd_student,
+        train_loader=train_loader,
+        epochs=wandbConfig.epochs,
+        learning_rate=wandbConfig.learning_rate,
+        device=device,
+        alpha=wandbConfig.alpha,
+        patience=wandbConfig.patience
+    )
+
+    mse = evaluate(kd_student, val_loader, device)
+    wandb.log({"mse": mse})
 
 def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate, alpha, device):
     #Todo: - Tratar de mejorar el bottleneck (warming)
@@ -276,6 +336,7 @@ def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate
 
         train_history.append(epoch_loss)
         val_history.append(val_loss)
+        print(f"Epoch {epoch + 1}/{epochs} | Train_Loss: {epoch_loss:.8f} | Val_Loss: {val_loss:.8f}")
 
         if early_stopper.step(val_loss, student):
             print("Early stopping triggered!")
@@ -299,10 +360,6 @@ def cosine_kd_loss(h_s, h_t):  # h_s, h_t: [B, C, H, W]
         h_t = h_t.reshape(B, C_t * H * W)
 
     return 1 - F.cosine_similarity(h_s, h_t, dim=-1).mean()
-
-# def cosine_kd_loss(h_s, h_t):
-#     return 1 - ((np.dot(h_s, h_t)) / (np.linalg.norm(h_s) * np.linalg.norm(h_t)))
-
 
 def train_attention_kd(teacher, student, t_feats, s_feats, train_loader, epochs, learning_rate, alpha, device):
     mse_loss = nn.MSELoss()
@@ -422,8 +479,7 @@ class EarlyStoppingLoss:
 
 # ============================================== CARGA MODELOS ========================================================
 def load_model(model, path, device):
-    # Todo: Arreglar esto (Como tal funciona, pero cuidado de no cargar con diferentes tamaños al guardado)
-    """Carga un modelo si el archivo existe, o devuelve uno nuevo."""
+    # Carga un modelo si el archivo existe, o devuelve uno nuevo.
     if os.path.exists(path):
         model.load_state_dict(torch.load(path, map_location=device))
         print(f"Modelo cargado desde {path}")
@@ -479,21 +535,29 @@ if __name__ == "__main__":
 
     print(f"Diferencia de tamaño: {teacher_size / student_size:.2f}x ({teacher_size:.2f}MB -> {student_size:.2f}MB)")
 
-    # Comparacion de resultados entre teacher y modelo sin destilar
+    # Comparacion de resultados entre teacher y modelo sin destilar:
     idx = int(conf["KDR"].get("plot_idx", 0))
     idx = max(0, min(idx, len(test_ds) - 1))
-    print(f"Mostrando muestra de test idx={idx}")
     graficar(student, test_ds, device, idx=idx, modelName="no_kd_student", modo="canales")
     graficar(teacher, test_ds, device, idx=idx, modelName="teacher", modo="canales")
 
     snr = []
     mseT = evaluate(teacher, val_loader, device)
+    psnrT = evaluate_psnr(teacher, val_loader, device)
+    mean_latT, std_latT, mean_per_sampleT = medir_latencia_gpu(teacher, val_loader, device)
+
     mseS = evaluate(student, val_loader, device)
+    psnrS = evaluate_psnr(student, val_loader, device)
+    mean_latS, std_latS, mean_per_sampleS = medir_latencia_gpu(student, val_loader, device)
     for x,y in val_loader: # For simple para comprobar que el ruido está correctamente aplicado en el datasr (se puede quitar)
         snr_db = calcular_ruido(señal_ruido_norm=x.numpy(), señal_norm=y.numpy())
         snr.append(snr_db)
     print(f"MSE teacher: {mseT:.8f}")
     print(f"MSE student: {mseS:.8f}")
+    print(f"PSNR teacher: {psnrT:.8f}")
+    print(f"PSNR student: {psnrS:.8f}")
+    print(f"Latencia teacher: {mean_per_sampleT:.8f}ms")
+    print(f"Latencia student: {mean_per_sampleS:.8f}ms")
     print(f"SNR medio del dataset de test: {np.mean(snr):.2f} dB")
 
     # ============================================== Cuantizar ========================================================
@@ -538,7 +602,7 @@ if __name__ == "__main__":
 
         kd_hist = train_knowledge_distillation(teacher=teacher, student=kd_student, train_loader=train_loader,
                                      epochs=conf["Model"]["sEpoch"], learning_rate=conf["Model"]["lr"], device=device,
-                                     teacher_threshold=0.001, alpha=conf["KDR"]["alpha"])
+                                     alpha=conf["KDR"]["alpha"], patience=conf["Model"]["patience"])
 
         # Comparacion entre teacher y modelo destilado
         graficar(kd_student, test_ds, device, idx=idx, modelName="kd_student", modo="canales")
@@ -585,3 +649,34 @@ if __name__ == "__main__":
 
     plot_training_curves(historial)
     guardar_training_curves(historial)
+
+# =============================================== COSAS WANDB ==========================================================
+    if (conf["KDR"]["wandb"]):
+        sweep_config = {
+            'method': 'bayes',  # bayesian, random, grid
+            'metric': {
+                'name': 'mse',
+                'goal': 'minimize'
+            },
+            'parameters': {
+                'alpha': {
+                    'min': 0.1,
+                    'max': 0.9
+                },
+                'learning_rate': {
+                    'values': [0.0001]
+                },
+                'epochs': {
+                    'values': [1000]
+                },
+                'batch_size': {
+                    'values': [16, 32]
+                },
+                'patience':{
+                    'values': [10]
+                }
+            }
+        }
+
+        sweep_id = wandb.sweep(sweep_config, project="Denoising_Basic_KD_1.4")
+        wandb.agent(sweep_id, lambda:train_kd_wandb(teacher))

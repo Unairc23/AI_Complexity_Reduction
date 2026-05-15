@@ -3,7 +3,9 @@ import json
 from torch.quantization.quantize_fx import prepare_fx, convert_fx
 import torch
 import platform
-from torch.ao.quantization import QConfigMapping, QConfig, MinMaxObserver, PerChannelMinMaxObserver
+from torch.ao.quantization import QConfigMapping, get_default_qconfig
+from torchao.quantization import Int4WeightOnlyConfig, quantize_
+
 
 with open("config.json", "r", encoding="utf-8") as f:
     conf = json.load(f)
@@ -32,8 +34,12 @@ def cuantizar_estatica(model, device, calibration_loader, num_batches=10):
     model = model.eval().cpu()
 
     if (conf["Cuant"]["mode"] == 'int8'):
-        qconfig_mapping = QConfigMapping().set_global(
-            torch.quantization.get_default_qconfig(backend) # Default config es INT8
+        qconfig_mapping = (
+            QConfigMapping()
+            .set_global(get_default_qconfig(backend))
+            .set_object_type(torch.nn.ConvTranspose2d, None)
+            #   ConvTranspose2d no se cuantiza porque no lo aguanta torchao, tambien podria cuantizarse per-tensor,
+            #   pero esto produce resultados bastante peores (perdida de 4.48% vs 0.15% en student)
         )
 
         example_inputs = (torch.randn(1, 3, 224, 224),)

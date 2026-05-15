@@ -1,8 +1,9 @@
 import json
-
 import numpy as np
 import h5py
 from matplotlib import pyplot as plt
+from sklearn.model_selection import train_test_split
+
 
 with open("config.json", "r", encoding="utf-8") as f:
     conf = json.load(f)
@@ -14,7 +15,7 @@ def cargarDatos(dset='h_AAplant_int_5G'):
     print (f"Shape original: {data.shape}")
     return data
 
-def preprocesarDatos(data, window, stride, snr_db=5):
+def preprocesarDatos(data, window, stride, snr_values=[5]):
     data_clean = data[:, :window]
     print(f"Eliminando valores τ para evitar NaN: {data_clean.shape}")
 
@@ -40,19 +41,22 @@ def preprocesarDatos(data, window, stride, snr_db=5):
         # ---- LIMPIO ----
         real_clean = np.real(bloque)
         imag_clean = np.imag(bloque)
+        img = np.stack([real_clean, imag_clean], axis=-1)
 
         # ---- CON RUIDO ----
-        bloque_ruido = añadir_awgn_complejo(bloque, snr_db)
-        real_ruido = np.real(bloque_ruido)
-        imag_ruido = np.imag(bloque_ruido)
+        for snr_db in snr_values:
+            bloque_ruido = añadir_awgn_complejo(bloque, snr_db)
 
-        img = np.stack([real_clean, imag_clean], axis=-1)
-        img_ruido = np.stack([real_ruido, imag_ruido], axis=-1)
-        snr = calcular_ruido(img, img_ruido)
+            real_ruido = np.real(bloque_ruido)
+            imag_ruido = np.imag(bloque_ruido)
 
-        imagenes.append(img)
-        imagenes_ruido.append(img_ruido)
-        snrs.append(snr)
+            img_ruido = np.stack([real_ruido, imag_ruido], axis=-1)
+
+            snr_real = calcular_ruido(img, img_ruido)
+
+            imagenes.append(img.copy())
+            imagenes_ruido.append(img_ruido)
+            snrs.append(snr_real)
 
     return imagenes, imagenes_ruido, snrs
 
@@ -170,14 +174,14 @@ def plot_2d(imagenes, imagenes_ruido, idx=0):
     plt.show()
 
 if __name__ == '__main__':
-
+    #TODO: Implementar K-fold para hiperaprametros
     if (conf["Data"]["Sint"] == False):
         dset = conf["Data"]["Dset"]
         dsets = ['h_AAplant_int_5G', 'h_AAplant_int_2G', 'h_AAplant_5G', 'h_AAplant_2G', 'h_Boil_2G', 'h_Boil_5G', 'h_GBurg_2G', 'h_GBurg_5G']
         snr_db = conf["Data"]["Snr_db"]
-        snrs = [5, 10, 20]
+        snrs = [10, 13, 15, 17, 20, 22, 25]
 
-        if (conf["Data"]["Mixed"]):
+        if (conf["Data"]["MixedData"]): # TODO: Siendo sinceros esto habria que quitarlo
             print("============== Juntando datasets ==============")
             data_total =[]
             for d in dsets:
@@ -188,21 +192,54 @@ if __name__ == '__main__':
             print("============== Cargando dataset individual ==============")
             data = cargarDatos(dset)
 
-        imagenes, imagenes_ruido, snrs = preprocesarDatos(data, 128, conf["Data"]["Stride"], snr_db)
-        print(f"Numero de imagenes: {len(imagenes)}")
+            indices = np.arange(data.shape[0])
+            idx_train, idx_temp = train_test_split(indices, test_size=0.3, random_state=42)
+            idx_val, idx_test = train_test_split(idx_temp, test_size=0.5, random_state=42)
 
-        snr_medio = np.median(snrs)
+            data_train = data[idx_train]
+            data_val = data[idx_val]
+            data_test = data[idx_test]
+
+        stride = conf["Data"]["Stride"]
+
+        if(conf["Data"]["MixedSNR"]):
+            imgs_train, imgs_ruido_train, snrs_train = preprocesarDatos(data_train, 128, stride, snrs)
+            imgs_val, imgs_ruido_val, snrs_val = preprocesarDatos(data_val, 128, stride, snrs)
+            imgs_test, imgs_ruido_test, snrs_test = preprocesarDatos(data_test, 128, stride, snrs)
+        else:
+            imgs_train, imgs_ruido_train, snrs_train = preprocesarDatos(data_train, 128, stride, [snr_db])
+            imgs_val, imgs_ruido_val, snrs_val = preprocesarDatos(data_val, 128, stride, [snr_db])
+            imgs_test, imgs_ruido_test, snrs_test = preprocesarDatos(data_test, 128, stride, [snr_db])
+        print(f"Numero de imagenes: {len(imgs_train)}")
+
+        snr_medio = np.median(snrs_train)
         print(f"SNR medio de las imagenes con ruido: {snr_medio:.2f} dB")
 
-        plot_señales(imagenes, imagenes_ruido, 0)
-        plot_2d(imagenes, imagenes_ruido, 0)
+        plot_señales(imgs_train, imgs_ruido_train, 0)
+        plot_2d(imgs_train, imgs_ruido_train, 0)
 
-        np.save(f'data/NIST_{dset}_imagenes.npy', imagenes)
-        print(f"Imagenes guardadas en data/NIST_{dset}_imagenes.npy")
+        np.save(f'data/NIST_{dset}_imgsTrain.npy', imgs_train)
+        print(f"Imagenes guardadas en data/NIST_{dset}_imgsTrain.npy")
+        np.save(f'data/NIST_{dset}_imgsVal.npy', imgs_val)
+        print(f"Imagenes guardadas en data/NIST_{dset}_imgsVal.npy")
+        np.save(f'data/NIST_{dset}_imgsTest.npy', imgs_test)
+        print(f"Imagenes guardadas en data/NIST_{dset}_imgsTest.npy")
 
-        np.save(f'data/NIST_{dset}_imagenes_snr_{snr_db}.npy', imagenes_ruido)
-        print(f"Imagenes con SNR {snr_db} guardadas en data/NIST_{dset}_imagenes_snr_{snr_db}.npy")
-
+        # TODO: Añadir los valores de ruido en config o guardarlos de alguna manera
+        if (conf["Data"]["MixedSNR"]):
+            np.save(f'data/NIST_{dset}_imgsTrain_snr_variable.npy', imgs_ruido_train)
+            print(f"Imagenes con SNR variable guardadas en data/NIST_{dset}_imgsTrain_snr_variable.npy")
+            np.save(f'data/NIST_{dset}_imgsVal_snr_variable.npy', imgs_ruido_val)
+            print(f"Imagenes con SNR variable guardadas en data/NIST_{dset}_imgsVal_snr_variable.npy")
+            np.save(f'data/NIST_{dset}_imgsTest_snr_variable.npy', imgs_ruido_test)
+            print(f"Imagenes con SNR variable guardadas en data/NIST_{dset}_imgsTest_snr_variable.npy")
+        else:
+            np.save(f'data/NIST_{dset}_imgsTrain_snr_{snr_db}.npy', imgs_ruido_train)
+            print(f"Imagenes con SNR {snr_db} guardadas en data/NIST_{dset}_imgsTrain_snr_{snr_db}.npy")
+            np.save(f'data/NIST_{dset}_imgsVal_snr_{snr_db}.npy', imgs_ruido_val)
+            print(f"Imagenes con SNR {snr_db} guardadas en data/NIST_{dset}_imgsVal_snr_{snr_db}.npy")
+            np.save(f'data/NIST_{dset}_imgsTest_snr_{snr_db}.npy', imgs_ruido_train)
+            print(f"Imagenes con SNR {snr_db} guardadas en data/NIST_{dset}_imgsTest_snr_{snr_db}.npy")
     else:
         dset = conf["KDR"]["Y"]
         dset_ruido = conf["KDR"]["X"]

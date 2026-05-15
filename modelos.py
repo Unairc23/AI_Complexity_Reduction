@@ -305,4 +305,5 @@ class UNetDenoiser(nn.Module):
         d2 = self.dec2(torch.cat([self.up2(b), e2], dim=1))
         d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1))
 
-        return self.out_conv(d1)
+        noise_pred = self.out_conv(d1)
+        return torch.tanh(x - noise_pred) # Residual learning, aprende del ruido y no solo la señal

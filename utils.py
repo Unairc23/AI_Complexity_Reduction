@@ -1,4 +1,6 @@
 import json
+import time
+
 import numpy as np
 import torch
 import torch.nn.functional as F
@@ -204,3 +206,40 @@ def attention_transfer_loss(s_feat, t_feat):
         s_feat = F.interpolate(s_feat, size=t_feat.shape[2:], mode='bilinear', align_corners=False)
     return F.mse_loss(attention_map(s_feat), attention_map(t_feat))
     # TODO: Buscar un metodo que pueda ser más representativo que MSE (DCT?)
+
+# ======================================== LATENCIA ===============================================
+
+def medir_latencia_gpu(model, loader, device, num_batches=50, warmup=10):
+    model.eval()
+    timings = []
+    i = 0
+
+    total_batches = len(loader)
+    if total_batches <= warmup:
+        warmup = max(0, total_batches - 1)
+
+    with torch.no_grad():
+        for X, Y in loader:
+            i += 1
+            X = X.to(device)
+
+            if i < warmup:
+                _ = model(X)
+                continue
+
+            torch.cuda.synchronize()
+            start = time.perf_counter()
+            _ = model(X)
+            torch.cuda.synchronize()
+            end = time.perf_counter()
+
+            timings.append(end - start)
+            if len(timings) >= num_batches:
+                break
+    mean_time = np.mean(timings) * 1000
+    std_time = np.std(timings) * 1000
+
+    batch_size = loader.batch_size or X.size(0)
+    mean_per_sample = mean_time / batch_size
+
+    return mean_time, std_time, mean_per_sample
