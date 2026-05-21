@@ -92,20 +92,25 @@ batch_size = conf["Model"]["batch_size"]
 #     [train_size, val_size, test_size]
 # )
 
-X_train = np.load(conf["KDR"]["X"].replace("imgs", "imgsTrain"))
-X_test = np.load(conf["KDR"]["X"].replace("imgs", "imgsTest"))
-X_val = np.load(conf["KDR"]["X"].replace("imgs", "imgsVal"))
-Y_train = np.load(conf["KDR"]["Y"].replace("imgs", "imgsTrain"))
-Y_test = np.load(conf["KDR"]["Y"].replace("imgs", "imgsTest"))
-Y_val = np.load(conf["KDR"]["Y"].replace("imgs", "imgsVal"))
+if not (conf["Data"]["Kfold"]):
+    X_train = np.load(conf["KDR"]["X"].replace(".npy", "_Train.npy"))
+    X_test = np.load(conf["KDR"]["X"].replace(".npy", "_Test.npy"))
+    X_val = np.load(conf["KDR"]["X"].replace(".npy", "_Val.npy"))
+    Y_train = np.load(conf["KDR"]["Y"].replace(".npy", "_Train.npy"))
+    Y_test = np.load(conf["KDR"]["Y"].replace(".npy", "_Test.npy"))
+    Y_val = np.load(conf["KDR"]["Y"].replace(".npy", "_Val.npy"))
 
-train_ds = NPYDataset(X_train, Y_train)
-test_ds = NPYDataset(X_test, Y_test)
-val_ds = NPYDataset(X_val, Y_val)
+    train_ds = NPYDataset(X_train, Y_train)
+    test_ds = NPYDataset(X_test, Y_test)
+    val_ds = NPYDataset(X_val, Y_val)
 
-train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    print(f"Tamaño Train: {len(train_ds)}")
+    print(f"Tamaño Test: {len(test_ds)}")
+    print(f"Tamaño Val: {len(val_ds)}")
+
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+    val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
 # ====================================== Entrenamiento de los modelos =================================================
 def train(model, train_loader, epochs, learning_rate, device):
@@ -216,7 +221,7 @@ def train_knowledge_distillation(teacher, student, train_loader, epochs, learnin
         if(conf["KDR"]["wandb"]):
             wandb.log({
                 "epoch": epoch + 1,
-                "mse": mse
+                "mse": epoch_loss
             })
 
         if early_stopper.step(val_loss, student):
@@ -267,7 +272,7 @@ def train_kd_wandb(teacher):
         patience=wandbConfig.patience
     )
 
-    mse = evaluate(kd_student, val_loader, device)
+    mse = evaluate(kd_student, val_loader, device) #TODO: Cambiar por test igual mejor
     wandb.log({"mse": mse})
 
 def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate, alpha, device):
@@ -496,6 +501,8 @@ if __name__ == "__main__":
     sModel = conf["KDR"]["sModel"]
     s_tamaño = conf["Model"]["sDepth"]
     snr = conf["Data"]["Snr_db"]
+    snr_med = np.median(snr).astype(int)
+    print(snr_med)
 
     teacher = MODEL_REGISTRY[tModel]["Teacher"]().to(device)
     student = MODEL_REGISTRY[sModel]["Student"]().to(device)
@@ -510,26 +517,26 @@ if __name__ == "__main__":
         print("\n================ Entrenando teacher ================")
         teacher_hist = train(model=teacher, train_loader=train_loader, epochs=conf["Model"]["tEpoch"], learning_rate=conf["Model"]["lr"],
               device=device)
-        torch.save(teacher.state_dict(), f"model/{tModel}_{t_tamaño}l_{snr}snr.pth")
+        torch.save(teacher.state_dict(), f"model/{tModel}_{t_tamaño}l_{snr_med}snr.pth")
     else:
-        teacher = load_model(teacher, path=f"model/{tModel}_{t_tamaño}l_{snr}snr.pth", device=device)
+        teacher = load_model(teacher, path=f"model/{tModel}_{t_tamaño}l_{snr_med}snr.pth", device=device)
 
     if conf["KDR"]["s_train"]:
         print("\n================ Entrenando no_KD_student ================")
         student_hist = train(model=student, train_loader=train_loader, epochs=conf["Model"]["sEpoch"], learning_rate=conf["Model"]["lr"],
               device=device)
-        torch.save(student.state_dict(), f"model/{sModel}_{s_tamaño}l_{snr}snr.pth")
+        torch.save(student.state_dict(), f"model/{sModel}_{s_tamaño}l_{snr_med}snr.pth")
     else:
-        student = load_model(student, path=f"model/{sModel}_{s_tamaño}l_{snr}snr.pth", device=device)
+        student = load_model(student, path=f"model/{sModel}_{s_tamaño}l_{snr_med}snr.pth", device=device)
 
     # Comparar tamaño teacher / modelo sin destilar
     teacher_params = "{:,}".format(sum(p.numel() for p in teacher.parameters()))
-    teacher_size = os.path.getsize(f"model/{tModel}_{t_tamaño}l_{snr}snr.pth") / 1024 ** 2
+    teacher_size = os.path.getsize(f"model/{tModel}_{t_tamaño}l_{snr_med}snr.pth") / 1024 ** 2
     print(f"\nTeacher Params: {teacher_params}")
     print(f"Teacher Size: {teacher_size} \n")
 
     student_params = "{:,}".format(sum(p.numel() for p in student.parameters()))
-    student_size = os.path.getsize(f"model/{sModel}_{s_tamaño}l_{snr}snr.pth") / 1024 ** 2
+    student_size = os.path.getsize(f"model/{sModel}_{s_tamaño}l_{snr_med}snr.pth") / 1024 ** 2
     print(f"Student Params: {student_params}")
     print(f"Student Size: {student_size} \n")
 
@@ -542,14 +549,14 @@ if __name__ == "__main__":
     graficar(teacher, test_ds, device, idx=idx, modelName="teacher", modo="canales")
 
     snr = []
-    mseT = evaluate(teacher, val_loader, device)
-    psnrT = evaluate_psnr(teacher, val_loader, device)
-    mean_latT, std_latT, mean_per_sampleT = medir_latencia_gpu(teacher, val_loader, device)
+    mseT = evaluate(teacher, test_loader, device)
+    psnrT = evaluate_psnr(teacher, test_loader, device)
+    mean_latT, std_latT, mean_per_sampleT = medir_latencia_gpu(teacher, test_loader, device)
 
-    mseS = evaluate(student, val_loader, device)
-    psnrS = evaluate_psnr(student, val_loader, device)
-    mean_latS, std_latS, mean_per_sampleS = medir_latencia_gpu(student, val_loader, device)
-    for x,y in val_loader: # For simple para comprobar que el ruido está correctamente aplicado en el datasr (se puede quitar)
+    mseS = evaluate(student, test_loader, device)
+    psnrS = evaluate_psnr(student, test_loader, device)
+    mean_latS, std_latS, mean_per_sampleS = medir_latencia_gpu(student, test_loader, device)
+    for x,y in test_loader: # For simple para comprobar que el ruido está correctamente aplicado en el datasr (se puede quitar)
         snr_db = calcular_ruido(señal_ruido_norm=x.numpy(), señal_norm=y.numpy())
         snr.append(snr_db)
     print(f"MSE teacher: {mseT:.8f}")
@@ -588,8 +595,8 @@ if __name__ == "__main__":
         graficar(teacher_q, test_ds, cpu, idx=idx, modelName="teacher_q", modo="canales")
         graficar(student_q, test_ds, cpu, idx=idx, modelName="student_q", modo="canales")
 
-        mseTq = evaluate(teacher_q, val_loader, cpu)
-        mseSq = evaluate(student_q, val_loader, cpu)
+        mseTq = evaluate(teacher_q, test_loader, cpu)
+        mseSq = evaluate(student_q, test_loader, cpu)
         print(f"MSE teacherq: {mseTq:.8f} / teacher_noQ: {mseT:.8f}: ")
         print(f"MSE studentq: {mseSq:.8f} / student_noQ: {mseS:.8f}: ")
         print(f"Diferencia Teacher: {mseTq - mseT:.8f} ({(mseTq - mseT)/mseT:.2f}%)")
@@ -648,7 +655,7 @@ if __name__ == "__main__":
         historial["AKD_Student"] = akd_hist
 
     plot_training_curves(historial)
-    guardar_training_curves(historial)
+    # guardar_training_curves(historial)
 
 # =============================================== COSAS WANDB ==========================================================
     if (conf["KDR"]["wandb"]):
@@ -673,10 +680,10 @@ if __name__ == "__main__":
                     'values': [16, 32]
                 },
                 'patience':{
-                    'values': [10]
+                    'values': [5]
                 }
             }
         }
 
-        sweep_id = wandb.sweep(sweep_config, project="Denoising_Basic_KD_1.4")
+        sweep_id = wandb.sweep(sweep_config, project="Denoising_Basic_KD_1.5")
         wandb.agent(sweep_id, lambda:train_kd_wandb(teacher))

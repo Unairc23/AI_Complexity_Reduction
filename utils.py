@@ -150,7 +150,8 @@ def guardar_training_curves(histories):
         ws_params.append([name, value])
 
     fechaHora = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
-    output_path = f"results/t{conf["Model"]["tDepth"]}_s{conf["Model"]["sDepth"]}_{conf["Data"]["Snr_db"]}db_{fechaHora}.xlsx"
+    snr_med = np.median(conf["Data"]["Snr_db"]).astype(int)
+    output_path = f"results/t{conf["Model"]["tDepth"]}_s{conf["Model"]["sDepth"]}_{snr_med}db_{fechaHora}.xlsx"
     wb.save(output_path)
     print(f"Curvas de entrenamiento guardadas en {output_path}")
 

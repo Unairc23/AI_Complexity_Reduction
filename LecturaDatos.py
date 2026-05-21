@@ -1,12 +1,21 @@
 import json
 import numpy as np
 import h5py
+from pathlib import Path
 from matplotlib import pyplot as plt
-from sklearn.model_selection import train_test_split
+from sklearn.model_selection import train_test_split, KFold
 
 
 with open("config.json", "r", encoding="utf-8") as f:
     conf = json.load(f)
+
+
+def preparar_directorios_folds():
+    fold_real_dir = Path("data/folds/real")
+    fold_est_dir = Path("data/folds/est")
+    fold_real_dir.mkdir(parents=True, exist_ok=True)
+    fold_est_dir.mkdir(parents=True, exist_ok=True)
+    return fold_real_dir, fold_est_dir
 
 def cargarDatos(dset='h_AAplant_int_5G'):
     f = h5py.File("NIST_Samples/NIST_Samples.mat",'r')
@@ -173,13 +182,12 @@ def plot_2d(imagenes, imagenes_ruido, idx=0):
     plt.tight_layout()
     plt.show()
 
-if __name__ == '__main__':
-    #TODO: Implementar K-fold para hiperaprametros
+def crear_imagenes():
+    # TODO: Implementar K-fold para hiperaprametros
     if (conf["Data"]["Sint"] == False):
         dset = conf["Data"]["Dset"]
         dsets = ['h_AAplant_int_5G', 'h_AAplant_int_2G', 'h_AAplant_5G', 'h_AAplant_2G', 'h_Boil_2G', 'h_Boil_5G', 'h_GBurg_2G', 'h_GBurg_5G']
         snr_db = conf["Data"]["Snr_db"]
-        snrs = [10, 13, 15, 17, 20, 22, 25]
 
         if (conf["Data"]["MixedData"]): # TODO: Siendo sinceros esto habria que quitarlo
             print("============== Juntando datasets ==============")
@@ -193,53 +201,76 @@ if __name__ == '__main__':
             data = cargarDatos(dset)
 
             indices = np.arange(data.shape[0])
-            idx_train, idx_temp = train_test_split(indices, test_size=0.3, random_state=42)
-            idx_val, idx_test = train_test_split(idx_temp, test_size=0.5, random_state=42)
+            idx_train, idx_test = train_test_split(indices, test_size=0.3, random_state=42)
+
+            if not (conf["Data"]["Kfold"]):
+                idx_val, idx_test = train_test_split(idx_test, test_size=0.5, random_state=42)
+                data_val = data[idx_val]
+            else:
+                folds = KFold(n_splits=conf["Data"]["Kfold"], shuffle=True, random_state=42)
+
 
             data_train = data[idx_train]
-            data_val = data[idx_val]
             data_test = data[idx_test]
 
         stride = conf["Data"]["Stride"]
 
-        if(conf["Data"]["MixedSNR"]):
-            imgs_train, imgs_ruido_train, snrs_train = preprocesarDatos(data_train, 128, stride, snrs)
-            imgs_val, imgs_ruido_val, snrs_val = preprocesarDatos(data_val, 128, stride, snrs)
-            imgs_test, imgs_ruido_test, snrs_test = preprocesarDatos(data_test, 128, stride, snrs)
-        else:
-            imgs_train, imgs_ruido_train, snrs_train = preprocesarDatos(data_train, 128, stride, [snr_db])
-            imgs_val, imgs_ruido_val, snrs_val = preprocesarDatos(data_val, 128, stride, [snr_db])
-            imgs_test, imgs_ruido_test, snrs_test = preprocesarDatos(data_test, 128, stride, [snr_db])
+        imgs_train, imgs_ruido_train, snrs_train = preprocesarDatos(data_train, 128, stride, snr_db)
+        imgs_test, imgs_ruido_test, snrs_test = preprocesarDatos(data_test, 128, stride, snr_db)
         print(f"Numero de imagenes: {len(imgs_train)}")
 
-        snr_medio = np.median(snrs_train)
-        print(f"SNR medio de las imagenes con ruido: {snr_medio:.2f} dB")
+        snr_medio = np.median(snrs_train).astype(int)
+        print(f"SNR medio de las imagenes con ruido: {snr_medio:2f} dB")
 
         plot_señales(imgs_train, imgs_ruido_train, 0)
         plot_2d(imgs_train, imgs_ruido_train, 0)
 
         np.save(f'data/NIST_{dset}_imgsTrain.npy', imgs_train)
         print(f"Imagenes guardadas en data/NIST_{dset}_imgsTrain.npy")
-        np.save(f'data/NIST_{dset}_imgsVal.npy', imgs_val)
-        print(f"Imagenes guardadas en data/NIST_{dset}_imgsVal.npy")
         np.save(f'data/NIST_{dset}_imgsTest.npy', imgs_test)
         print(f"Imagenes guardadas en data/NIST_{dset}_imgsTest.npy")
 
-        # TODO: Añadir los valores de ruido en config o guardarlos de alguna manera
-        if (conf["Data"]["MixedSNR"]):
-            np.save(f'data/NIST_{dset}_imgsTrain_snr_variable.npy', imgs_ruido_train)
-            print(f"Imagenes con SNR variable guardadas en data/NIST_{dset}_imgsTrain_snr_variable.npy")
-            np.save(f'data/NIST_{dset}_imgsVal_snr_variable.npy', imgs_ruido_val)
-            print(f"Imagenes con SNR variable guardadas en data/NIST_{dset}_imgsVal_snr_variable.npy")
-            np.save(f'data/NIST_{dset}_imgsTest_snr_variable.npy', imgs_ruido_test)
-            print(f"Imagenes con SNR variable guardadas en data/NIST_{dset}_imgsTest_snr_variable.npy")
+        np.save(f'data/NIST_{dset}_imgsTrain_snr_{snr_medio}.npy', imgs_ruido_train)
+        print(f"Imagenes con SNR {snr_medio} guardadas en data/NIST_{dset}_imgsTrain_snr_{snr_medio}.npy")
+        np.save(f'data/NIST_{dset}_imgsTest_snr_{snr_medio}.npy', imgs_ruido_train)
+        print(f"Imagenes con SNR {snr_medio} guardadas en data/NIST_{dset}_imgsTest_snr_{snr_medio}.npy")
+
+        if not (conf["Data"]["Kfold"]):
+            imgs_val, imgs_ruido_val, snrs_val = preprocesarDatos(data_val, 128, stride, snr_db)
+            np.save(f'data/NIST_{dset}_imgsVal.npy', imgs_val)
+            print(f"Imagenes guardadas en data/NIST_{dset}_imgsVal.npy")
+            np.save(f'data/NIST_{dset}_imgsVal_snr_{snr_medio}.npy', imgs_ruido_val)
+            print(f"Imagenes con SNR {snr_medio} guardadas en data/NIST_{dset}_imgsVal_snr_{snr_medio}.npy")
         else:
-            np.save(f'data/NIST_{dset}_imgsTrain_snr_{snr_db}.npy', imgs_ruido_train)
-            print(f"Imagenes con SNR {snr_db} guardadas en data/NIST_{dset}_imgsTrain_snr_{snr_db}.npy")
-            np.save(f'data/NIST_{dset}_imgsVal_snr_{snr_db}.npy', imgs_ruido_val)
-            print(f"Imagenes con SNR {snr_db} guardadas en data/NIST_{dset}_imgsVal_snr_{snr_db}.npy")
-            np.save(f'data/NIST_{dset}_imgsTest_snr_{snr_db}.npy', imgs_ruido_train)
-            print(f"Imagenes con SNR {snr_db} guardadas en data/NIST_{dset}_imgsTest_snr_{snr_db}.npy")
+            fold_real_dir, fold_est_dir = preparar_directorios_folds()
+            for fold_idx, (train_idx, val_idx) in enumerate(folds.split(data_train)):
+                idx_fold_train = idx_train[train_idx]
+                idx_fold_val = idx_train[val_idx]
+
+                data_fold_train = data[idx_fold_train]
+                data_fold_val = data[idx_fold_val]
+
+                imgs_fold_train, imgs_ruido_fold_train, snrs_fold_train = preprocesarDatos(data_fold_train, 128, stride, snr_db)
+                imgs_fold_val, imgs_ruido_fold_val, snrs_fold_val = preprocesarDatos(data_fold_val, 128, stride, snr_db)
+
+                real_train_path = fold_real_dir / f'NIST_{dset}_fold{fold_idx}_imgsTrain.npy'
+                real_val_path = fold_real_dir / f'NIST_{dset}_fold{fold_idx}_imgsVal.npy'
+                est_train_path = fold_est_dir / f'NIST_{dset}_fold{fold_idx}_imgsTrain_snr_{snr_medio}.npy'
+                est_val_path = fold_est_dir / f'NIST_{dset}_fold{fold_idx}_imgsVal_snr_{snr_medio}.npy'
+                idx_path = fold_real_dir / f'NIST_{dset}_fold{fold_idx}_indices.npz'
+
+                np.save(real_train_path, imgs_fold_train)
+                print(f"Imagenes fold {fold_idx} guardadas en {real_train_path}")
+                np.save(real_val_path, imgs_fold_val)
+                print(f"Imagenes fold {fold_idx} guardadas en {real_val_path}")
+                np.save(est_train_path, imgs_ruido_fold_train)
+                print(f"Imagenes con SNR {snr_medio} fold {fold_idx} guardadas en {est_train_path}")
+                np.save(est_val_path, imgs_ruido_fold_val)
+                print(f"Imagenes con SNR {snr_medio} fold {fold_idx} guardadas en {est_val_path}")
+
+                np.savez(idx_path, idx_train=idx_fold_train, idx_val=idx_fold_val, idx_test=idx_test)
+                print(f"Indices fold {fold_idx} guardados en {idx_path}")
+
     else:
         dset = conf["KDR"]["Y"]
         dset_ruido = conf["KDR"]["X"]
@@ -253,16 +284,89 @@ if __name__ == '__main__':
         print(imagenes)
         print(imagenes_ruido)
 
-        imagenes = preprocesarDatosSynt(imagenes, 128, conf["Data"]["Stride"])
-        imagenes_ruido = preprocesarDatosSynt(imagenes_ruido, 128, conf["Data"]["Stride"])
+        indices = np.arange(imagenes.shape[1])
+        idx_train, idx_test = train_test_split(indices, test_size=0.3, shuffle=True, random_state=42)
 
-        print(imagenes.shape)
-        print(imagenes_ruido.shape)
+        if not (conf["Data"]["Kfold"]):
+            idx_val, idx_test = train_test_split(idx_test, test_size=0.5, shuffle=True, random_state=42)
+            # data_val = imagenes[idx_val]
+        else:
+            folds = KFold(n_splits=conf["Data"]["Kfold"], shuffle=True, random_state=42)
 
-        plot_señales(imagenes, imagenes_ruido)
+        idx_train = np.sort(idx_train)
+        idx_test = np.sort(idx_test)
 
-        np.save(dset.replace(".npy", "128.npy"), imagenes)
-        print(f"Imagenes guardadas en {dset.replace('.npy', '128.npy')}")
+        imagenes_train = imagenes[:, idx_train]
+        imagenes_test = imagenes[:, idx_test]
+        imagenes_ruido_train = imagenes_ruido[:, idx_train]
+        imagenes_ruido_test = imagenes_ruido[:, idx_test]
 
-        np.save(dset_ruido.replace(".npy", "128.npy"), imagenes_ruido)
-        print(f"Imagenes guardadas en {dset_ruido.replace('.npy', '128.npy')}")
+        if not (conf["Data"]["Kfold"]):
+            idx_val = np.sort(idx_val)
+            imagenes_val = imagenes[:, idx_val]
+            imagenes_ruido_val = imagenes_ruido[:, idx_val]
+
+        imagenes_train = preprocesarDatosSynt(imagenes_train, 128, conf["Data"]["Stride"])
+        imagenes_test = preprocesarDatosSynt(imagenes_test, 128, conf["Data"]["Stride"])
+        if not (conf["Data"]["Kfold"]):
+            imagenes_val = preprocesarDatosSynt(imagenes_val, 128, conf["Data"]["Stride"])
+        imagenes_ruido_train = preprocesarDatosSynt(imagenes_ruido_train, 128, conf["Data"]["Stride"])
+        imagenes_ruido_test = preprocesarDatosSynt(imagenes_ruido_test, 128, conf["Data"]["Stride"])
+        if not (conf["Data"]["Kfold"]):
+            imagenes_ruido_val = preprocesarDatosSynt(imagenes_ruido_val, 128, conf["Data"]["Stride"])
+
+        # imagenes = preprocesarDatosSynt(imagenes, 128, conf["Data"]["Stride"])
+        # imagenes_ruido = preprocesarDatosSynt(imagenes_ruido, 128, conf["Data"]["Stride"])
+
+        print(imagenes_train.shape)
+        print(imagenes_ruido_train.shape)
+
+        plot_señales(imagenes_train, imagenes_ruido_train)
+        plot_señales(imagenes_test, imagenes_ruido_test)
+        if not (conf["Data"]["Kfold"]):
+            plot_señales(imagenes_val, imagenes_ruido_val)
+
+        np.save(dset.replace(".npy", "128_Train.npy"), imagenes_train)
+        print(f"Imagenes guardadas en {dset.replace('.npy', '128_Train.npy')}")
+        np.save(dset.replace(".npy", "128_Test.npy"), imagenes_test)
+        print(f"Imagenes guardadas en {dset.replace('.npy', '128_Test.npy')}")
+        if not (conf["Data"]["Kfold"]):
+            np.save(dset.replace(".npy", "128_Val.npy"), imagenes_val)
+            print(f"Imagenes guardadas en {dset.replace('.npy', '128_Val.npy')}")
+
+        np.save(dset_ruido.replace(".npy", "128_Train.npy"), imagenes_ruido_train)
+        print(f"Imagenes guardadas en {dset_ruido.replace('.npy', '128_Train.npy')}")
+        np.save(dset_ruido.replace(".npy", "128_Test.npy"), imagenes_ruido_test)
+        print(f"Imagenes guardadas en {dset_ruido.replace('.npy', '128_Test.npy')}")
+        if not (conf["Data"]["Kfold"]):
+            np.save(dset_ruido.replace(".npy", "128_Val.npy"), imagenes_ruido_val)
+            print(f"Imagenes guardadas en {dset_ruido.replace('.npy', '128_Val.npy')}")
+
+        if conf["Data"]["Kfold"]:
+            fold_real_dir, fold_est_dir = preparar_directorios_folds()
+            dset_name = Path(dset).stem
+            for fold_idx, (train_idx, val_idx) in enumerate(folds.split(idx_train)):
+                idx_fold_train = np.sort(idx_train[train_idx])
+                idx_fold_val = np.sort(idx_train[val_idx])
+
+                img_fold_train = preprocesarDatosSynt(imagenes[:, idx_fold_train], 128, conf["Data"]["Stride"])
+                img_fold_val = preprocesarDatosSynt(imagenes[:, idx_fold_val], 128, conf["Data"]["Stride"])
+                img_ruido_fold_train = preprocesarDatosSynt(imagenes_ruido[:, idx_fold_train], 128, conf["Data"]["Stride"])
+                img_ruido_fold_val = preprocesarDatosSynt(imagenes_ruido[:, idx_fold_val], 128, conf["Data"]["Stride"])
+
+                real_train_path = fold_real_dir / f'{dset_name}_fold{fold_idx}_imgsTrain.npy'
+                real_val_path = fold_real_dir / f'{dset_name}_fold{fold_idx}_imgsVal.npy'
+                est_train_path = fold_est_dir / f'{dset_name}_fold{fold_idx}_imgsTrain.npy'
+                est_val_path = fold_est_dir / f'{dset_name}_fold{fold_idx}_imgsVal.npy'
+                idx_path = fold_real_dir / f'{dset_name}_fold{fold_idx}_indices.npz'
+
+                np.save(real_train_path, img_fold_train)
+                np.save(real_val_path, img_fold_val)
+                np.save(est_train_path, img_ruido_fold_train)
+                np.save(est_val_path, img_ruido_fold_val)
+                np.savez(idx_path, idx_train=idx_fold_train, idx_val=idx_fold_val, idx_test=idx_test)
+
+                print(f"Fold {fold_idx} guardado en {real_train_path} y {est_train_path}")
+
+if __name__ == '__main__':
+    crear_imagenes()
