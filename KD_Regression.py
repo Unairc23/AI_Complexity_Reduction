@@ -5,6 +5,7 @@ from glob import glob
 from operator import contains
 import openpyxl
 import wandb
+import statistics
 
 import torch
 import torch.nn as nn
@@ -16,6 +17,8 @@ from torch.utils.data import random_split, Dataset
 import torch.nn.functional as F
 import random, numpy as np
 from sklearn.metrics.pairwise import cosine_similarity
+import builtins
+from pathlib import Path
 
 from modelos import DnCNN, ResNetDenoiser, UNetDenoiser
 from utils import *
@@ -91,26 +94,46 @@ batch_size = conf["Model"]["batch_size"]
 #     full_dataset,
 #     [train_size, val_size, test_size]
 # )
+#
+# train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+# val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+# test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
 
-if not (conf["Data"]["Kfold"]):
-    X_train = np.load(conf["KDR"]["X"].replace(".npy", "_Train.npy"))
-    X_test = np.load(conf["KDR"]["X"].replace(".npy", "_Test.npy"))
-    X_val = np.load(conf["KDR"]["X"].replace(".npy", "_Val.npy"))
-    Y_train = np.load(conf["KDR"]["Y"].replace(".npy", "_Train.npy"))
-    Y_test = np.load(conf["KDR"]["Y"].replace(".npy", "_Test.npy"))
-    Y_val = np.load(conf["KDR"]["Y"].replace(".npy", "_Val.npy"))
+# if not (conf["Data"]["Kfold"]):
+X_train = np.load(conf["KDR"]["X"].replace(".npy", "_Train.npy"))
+X_test = np.load(conf["KDR"]["X"].replace(".npy", "_Test.npy"))
+X_val = np.load(conf["KDR"]["X"].replace(".npy", "_Val.npy"))
+Y_train = np.load(conf["KDR"]["Y"].replace(".npy", "_Train.npy"))
+Y_test = np.load(conf["KDR"]["Y"].replace(".npy", "_Test.npy"))
+Y_val = np.load(conf["KDR"]["Y"].replace(".npy", "_Val.npy"))
+
+train_ds = NPYDataset(X_train, Y_train)
+test_ds = NPYDataset(X_test, Y_test)
+val_ds = NPYDataset(X_val, Y_val)
+
+print(f"Tamaño Train: {len(train_ds)}")
+print(f"Tamaño Test: {len(test_ds)}")
+print(f"Tamaño Val: {len(val_ds)}")
+
+train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
+val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+
+def cargar_fold(i, batch=16):
+    dset = conf["KDR"]["Y"]
+    dset_name = Path(dset).stem
+    X_train = np.load(f"data/folds/est/{dset_name}_{i}_Train.npy")
+    X_val = np.load(f"data/folds/est/{dset_name}_{i}_Val.npy")
+    Y_train = np.load(f"data/folds/real/{dset_name}_{i}_Train.npy")
+    Y_val = np.load(f"data/folds/real/{dset_name}_{i}_Val.npy")
 
     train_ds = NPYDataset(X_train, Y_train)
-    test_ds = NPYDataset(X_test, Y_test)
     val_ds = NPYDataset(X_val, Y_val)
 
-    print(f"Tamaño Train: {len(train_ds)}")
-    print(f"Tamaño Test: {len(test_ds)}")
-    print(f"Tamaño Val: {len(val_ds)}")
+    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch, shuffle=True, num_workers=0)
+    val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch, shuffle=False, num_workers=0)
 
-    train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-    val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-    test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
+    return train_loader, val_loader
 
 # ====================================== Entrenamiento de los modelos =================================================
 def train(model, train_loader, epochs, learning_rate, device):
@@ -161,7 +184,7 @@ def train(model, train_loader, epochs, learning_rate, device):
 
     return train_history, val_history
 
-def train_knowledge_distillation(teacher, student, train_loader, epochs, learning_rate, alpha, device, patience):
+def train_knowledge_distillation(teacher, student, train_loader, val_loader, epochs, learning_rate, alpha, device, patience):
     mse_loss = nn.MSELoss()
     optimizer = optim.Adam(student.parameters(), lr=learning_rate)
     early_stopper = EarlyStoppingLoss(patience=patience)
@@ -243,66 +266,118 @@ def train_kd_wandb(teacher):
             'sSize': conf["Model"]["sDepth"],
         }
     )
-    wandbConfig = wandb.config
-    kd_student = MODEL_REGISTRY[sModel]["Student"]().to(device)
+    cfg = wandb.config
 
-    # Se vuelven a crear aqui dentro para aplicar los parametros de wandb
-    train_loader = torch.utils.data.DataLoader(
-        train_ds,
-        batch_size=wandbConfig.batch_size,
-        shuffle=True,
-        num_workers=0
-    )
+    def run_fold(train_loader, val_loader):
+        student = MODEL_REGISTRY[sModel]["Student"]().to(device)
+        train_knowledge_distillation(
+            teacher,
+            student=student,
+            train_loader=train_loader,
+            val_loader=val_loader,
+            epochs=cfg.epochs,
+            learning_rate=cfg.learning_rate,
+            device=device,
+            alpha=cfg.alpha,
+            patience=cfg.patience,
+        )
+        return evaluate(student, val_loader, device)
 
-    val_loader = torch.utils.data.DataLoader(
-        val_ds,
-        batch_size=wandbConfig.batch_size,
-        shuffle=False,
-        num_workers=0
-    )
+    if not conf["Data"]["Kfold"]:
+        train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=0)
+        val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=0)
 
-    train_knowledge_distillation(
-        teacher,
-        student=kd_student,
-        train_loader=train_loader,
-        epochs=wandbConfig.epochs,
-        learning_rate=wandbConfig.learning_rate,
-        device=device,
-        alpha=wandbConfig.alpha,
-        patience=wandbConfig.patience
-    )
+        mse = run_fold(train_loader, val_loader)
+        wandb.log({"mse": mse})
 
-    mse = evaluate(kd_student, val_loader, device) #TODO: Cambiar por test igual mejor
-    wandb.log({"mse": mse})
+    else:
+        N_FOLDS = 4
+        mse_per_fold = []
 
-def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate, alpha, device):
-    #Todo: - Tratar de mejorar el bottleneck (warming)
+        for i in range(N_FOLDS):
+            train_loader, val_loader = cargar_fold(i, cfg.batch_size)
+            fold_mse = run_fold(train_loader, val_loader)
+            mse_per_fold.append(fold_mse)
+            wandb.log({f"mse_fold_{i}": fold_mse})
+            print(f"Fold {i+1}/{N_FOLDS} | MSE: {fold_mse:.6f}")
+
+        mse_mean = statistics.mean(mse_per_fold)
+        mse_std = statistics.stdev(mse_per_fold)
+
+        wandb.log({
+            "mse_mean": mse_mean,
+            "mse_std":  mse_std,
+        })
+        print(f"\nMean: {mse_mean:.6f} | Std: {mse_std:.6f}")
+
+def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate, alpha, device, fkd_feats=None):
+
+    _fkd = fkd_feats if fkd_feats is not None else globals().get("fkd_features")
     mse_loss = nn.MSELoss()
-    early_stopper = EarlyStoppingLoss(patience=conf["Model"]["patience"]+8)
+    early_stopper = EarlyStoppingLoss(patience=conf["Model"]["patience"] + 8)
 
     teacher.to(device)
     student.to(device)
     teacher.eval()
-    student.train()
 
-    with torch.no_grad(): # Seguramente este pass para ver las dimensiones de los modelos se pueda hacer de otra manera
+    with torch.no_grad():
         dummy = next(iter(train_loader))[0][:1].to(device)
         teacher(dummy)
         t_ch = teacher_features["latent"].shape[1]
         student(dummy)
-        s_ch = fkd_features["latent"].shape[1]
+        s_ch = _fkd["latent"].shape[1]
 
     bottleneck_proj = nn.Conv2d(t_ch, s_ch, kernel_size=1, bias=False).to(device)
     print(f"Linear bottleneck: {t_ch} → {s_ch} canales")
 
+    # Warmup del bottleneck (student congelado)
+    WARMUP_EPOCHS = max(5, epochs // 50)
+
+    # Congela el student
+    for param in student.parameters():
+        param.requires_grad = False
+
+    warmup_optimizer = optim.Adam(
+        bottleneck_proj.parameters(),
+        lr=learning_rate * 20
+    )
+
+    print(f"\n── Bottleneck warmup ({WARMUP_EPOCHS} epochs, student congelado) ──")
+    for epoch in range(WARMUP_EPOCHS):
+        bottleneck_proj.train()
+        running_kd = 0.0
+
+        for X, _ in train_loader:
+            X = X.to(device)
+            warmup_optimizer.zero_grad()
+
+            with torch.no_grad():
+                teacher(X)
+                t_latent = teacher_features["latent"].detach()
+                student(X)
+                s_latent = _fkd["latent"].detach()  # fijo, no aprende aún
+
+            t_latent_proj = bottleneck_proj(t_latent)
+            kd_loss = cosine_kd_loss(s_latent, t_latent_proj)
+            kd_loss.backward()
+            warmup_optimizer.step()
+            running_kd += kd_loss.item()
+
+        print(f"  Warmup {epoch+1}/{WARMUP_EPOCHS} | KD_Loss: {running_kd/len(train_loader):.8f}")
+
+    # Descongelar el student
+    for param in student.parameters():
+        param.requires_grad = True
+
+    # Entrenamiento conjunto
     optimizer = optim.Adam([
         {"params": student.parameters(), "lr": learning_rate},
-        {"params": bottleneck_proj.parameters(), "lr": learning_rate * 10}
+        {"params": bottleneck_proj.parameters(), "lr": learning_rate}
     ])
 
-    train_history = []
-    val_history = []
+    train_history, val_history = [], []
 
+    print(f"\n Entrenamiento conjunto ({epochs} epochs)")
     for epoch in range(epochs):
         student.train()
         bottleneck_proj.train()
@@ -318,14 +393,13 @@ def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate
                 t_latent = teacher_features["latent"].detach()
 
             student_pred = student(X)
-            s_latent = fkd_features["latent"]
+            s_latent = _fkd["latent"]
 
             if conf["Data"]["Unica"]:
                 Y = Y[:, :, 64, :]
                 student_pred = student_pred[:, :, 64, :]
 
             t_latent_proj = bottleneck_proj(t_latent)
-
             out_loss = mse_loss(student_pred, Y)
             kd_loss = cosine_kd_loss(s_latent, t_latent_proj)
             loss = out_loss + alpha * kd_loss
@@ -338,7 +412,6 @@ def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate
 
         epoch_loss = student_running_loss / len(train_loader)
         val_loss = evaluate(student, val_loader, device)
-
         train_history.append(epoch_loss)
         val_history.append(val_loss)
         print(f"Epoch {epoch + 1}/{epochs} | Train_Loss: {epoch_loss:.8f} | Val_Loss: {val_loss:.8f}")
@@ -607,7 +680,7 @@ if __name__ == "__main__":
         print("\n================ Entrenando kd_student ================")
         kd_student = MODEL_REGISTRY[sModel]["Student"]().to(device)
 
-        kd_hist = train_knowledge_distillation(teacher=teacher, student=kd_student, train_loader=train_loader,
+        kd_hist = train_knowledge_distillation(teacher=teacher, student=kd_student, train_loader=train_loader, val_loader=val_loader,
                                      epochs=conf["Model"]["sEpoch"], learning_rate=conf["Model"]["lr"], device=device,
                                      alpha=conf["KDR"]["alpha"], patience=conf["Model"]["patience"])
 
@@ -670,6 +743,9 @@ if __name__ == "__main__":
                     'min': 0.1,
                     'max': 0.9
                 },
+                # 'features': {
+                #     'values': ['spatial', 'channel', 'global']
+                # },
                 'learning_rate': {
                     'values': [0.0001]
                 },
@@ -685,5 +761,5 @@ if __name__ == "__main__":
             }
         }
 
-        sweep_id = wandb.sweep(sweep_config, project="Denoising_Basic_KD_1.5")
+        sweep_id = wandb.sweep(sweep_config, project="Denoising_Basic_KD_1.6")
         wandb.agent(sweep_id, lambda:train_kd_wandb(teacher))

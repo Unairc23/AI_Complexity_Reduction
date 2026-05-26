@@ -207,7 +207,7 @@ def crear_imagenes():
                 idx_val, idx_test = train_test_split(idx_test, test_size=0.5, random_state=42)
                 data_val = data[idx_val]
             else:
-                folds = KFold(n_splits=conf["Data"]["Kfold"], shuffle=True, random_state=42)
+                folds = KFold(n_splits=5, shuffle=True, random_state=42)
 
 
             data_train = data[idx_train]
@@ -230,10 +230,10 @@ def crear_imagenes():
         np.save(f'data/NIST_{dset}_imgsTest.npy', imgs_test)
         print(f"Imagenes guardadas en data/NIST_{dset}_imgsTest.npy")
 
-        np.save(f'data/NIST_{dset}_imgsTrain_snr_{snr_medio}.npy', imgs_ruido_train)
-        print(f"Imagenes con SNR {snr_medio} guardadas en data/NIST_{dset}_imgsTrain_snr_{snr_medio}.npy")
-        np.save(f'data/NIST_{dset}_imgsTest_snr_{snr_medio}.npy', imgs_ruido_train)
-        print(f"Imagenes con SNR {snr_medio} guardadas en data/NIST_{dset}_imgsTest_snr_{snr_medio}.npy")
+        np.save(f'data/NIST_{dset}_snr_{snr_medio}_Train.npy', imgs_ruido_train)
+        print(f"Imagenes con SNR {snr_medio} guardadas en data/NIST_{dset}_snr_{snr_medio}_Train.npy")
+        np.save(f'data/NIST_{dset}_snr_{snr_medio}_Test.npy', imgs_ruido_test)
+        print(f"Imagenes con SNR {snr_medio} guardadas en data/NIST_{dset}_snr_{snr_medio}_Test.npy")
 
         if not (conf["Data"]["Kfold"]):
             imgs_val, imgs_ruido_val, snrs_val = preprocesarDatos(data_val, 128, stride, snr_db)
@@ -243,9 +243,9 @@ def crear_imagenes():
             print(f"Imagenes con SNR {snr_medio} guardadas en data/NIST_{dset}_imgsVal_snr_{snr_medio}.npy")
         else:
             fold_real_dir, fold_est_dir = preparar_directorios_folds()
-            for fold_idx, (train_idx, val_idx) in enumerate(folds.split(data_train)):
-                idx_fold_train = idx_train[train_idx]
-                idx_fold_val = idx_train[val_idx]
+            for fold_idx, (train_idx, val_idx) in enumerate(folds.split(idx_train)):
+                idx_fold_train = np.sort(idx_train[train_idx])
+                idx_fold_val = np.sort(idx_train[val_idx])
 
                 data_fold_train = data[idx_fold_train]
                 data_fold_val = data[idx_fold_val]
@@ -253,11 +253,11 @@ def crear_imagenes():
                 imgs_fold_train, imgs_ruido_fold_train, snrs_fold_train = preprocesarDatos(data_fold_train, 128, stride, snr_db)
                 imgs_fold_val, imgs_ruido_fold_val, snrs_fold_val = preprocesarDatos(data_fold_val, 128, stride, snr_db)
 
-                real_train_path = fold_real_dir / f'NIST_{dset}_fold{fold_idx}_imgsTrain.npy'
-                real_val_path = fold_real_dir / f'NIST_{dset}_fold{fold_idx}_imgsVal.npy'
-                est_train_path = fold_est_dir / f'NIST_{dset}_fold{fold_idx}_imgsTrain_snr_{snr_medio}.npy'
-                est_val_path = fold_est_dir / f'NIST_{dset}_fold{fold_idx}_imgsVal_snr_{snr_medio}.npy'
-                idx_path = fold_real_dir / f'NIST_{dset}_fold{fold_idx}_indices.npz'
+                real_train_path = fold_real_dir / f'NIST_{dset}_{fold_idx}_Train.npy'
+                real_val_path = fold_real_dir / f'NIST_{dset}_{fold_idx}_Val.npy'
+                est_train_path = fold_est_dir / f'NIST_{dset}_snr_{snr_medio}_{fold_idx}_Train.npy'
+                est_val_path = fold_est_dir / f'NIST_{dset}_snr_{snr_medio}_{fold_idx}_Val.npy'
+                # idx_path = fold_real_dir / f'NIST_{dset}_fold{fold_idx}_indices.npz'
 
                 np.save(real_train_path, imgs_fold_train)
                 print(f"Imagenes fold {fold_idx} guardadas en {real_train_path}")
@@ -268,8 +268,8 @@ def crear_imagenes():
                 np.save(est_val_path, imgs_ruido_fold_val)
                 print(f"Imagenes con SNR {snr_medio} fold {fold_idx} guardadas en {est_val_path}")
 
-                np.savez(idx_path, idx_train=idx_fold_train, idx_val=idx_fold_val, idx_test=idx_test)
-                print(f"Indices fold {fold_idx} guardados en {idx_path}")
+                # np.savez(idx_path, idx_train=idx_fold_train, idx_val=idx_fold_val, idx_test=idx_test)
+                # print(f"Indices fold {fold_idx} guardados en {idx_path}")
 
     else:
         dset = conf["KDR"]["Y"]
@@ -291,7 +291,7 @@ def crear_imagenes():
             idx_val, idx_test = train_test_split(idx_test, test_size=0.5, shuffle=True, random_state=42)
             # data_val = imagenes[idx_val]
         else:
-            folds = KFold(n_splits=conf["Data"]["Kfold"], shuffle=True, random_state=42)
+            folds = KFold(5, shuffle=True, random_state=42)
 
         idx_train = np.sort(idx_train)
         idx_test = np.sort(idx_test)
@@ -354,17 +354,18 @@ def crear_imagenes():
                 img_ruido_fold_train = preprocesarDatosSynt(imagenes_ruido[:, idx_fold_train], 128, conf["Data"]["Stride"])
                 img_ruido_fold_val = preprocesarDatosSynt(imagenes_ruido[:, idx_fold_val], 128, conf["Data"]["Stride"])
 
-                real_train_path = fold_real_dir / f'{dset_name}_fold{fold_idx}_imgsTrain.npy'
-                real_val_path = fold_real_dir / f'{dset_name}_fold{fold_idx}_imgsVal.npy'
-                est_train_path = fold_est_dir / f'{dset_name}_fold{fold_idx}_imgsTrain.npy'
-                est_val_path = fold_est_dir / f'{dset_name}_fold{fold_idx}_imgsVal.npy'
-                idx_path = fold_real_dir / f'{dset_name}_fold{fold_idx}_indices.npz'
+                real_train_path = fold_real_dir / f'{dset_name}128_{fold_idx}_Train.npy'
+                real_val_path = fold_real_dir / f'{dset_name}128_{fold_idx}_Val.npy'
+                est_train_path = fold_est_dir / f'{dset_name}128_{fold_idx}_Train.npy'
+                est_val_path = fold_est_dir / f'{dset_name}128_{fold_idx}_Val.npy'
+                # idx_path = fold_real_dir / f'{dset_name}_fold{fold_idx}_indices.npz'
 
                 np.save(real_train_path, img_fold_train)
                 np.save(real_val_path, img_fold_val)
                 np.save(est_train_path, img_ruido_fold_train)
                 np.save(est_val_path, img_ruido_fold_val)
-                np.savez(idx_path, idx_train=idx_fold_train, idx_val=idx_fold_val, idx_test=idx_test)
+                # np.savez(idx_path, idx_train=idx_fold_train, idx_val=idx_fold_val, idx_test=idx_test)
+                plot_señales(img_fold_train, img_ruido_fold_train)
 
                 print(f"Fold {fold_idx} guardado en {real_train_path} y {est_train_path}")
 
