@@ -11,22 +11,14 @@ import openpyxl
 with open("config.json") as f:
     conf = json.load(f)
 
-def calcular_ruido(señal_norm, señal_ruido_norm):
-    ruido = señal_ruido_norm - señal_norm
-    p_señal = np.mean(np.abs(señal_norm) ** 2)
-    p_ruido = np.mean(np.abs(ruido) ** 2)
-    if p_ruido == 0:
-        return np.inf
-    return 10 * np.log10(p_señal / p_ruido)
-
 # ========================================REPRESENTACION / GUARDADO DATOS===============================================
 
 def graficar(model, dataset, device, idx=0, modelName="modelo", modo="unico"):
 
     model.eval()
 
-    x, y = dataset[idx]                # (C, H, W)
-    x_in = x.unsqueeze(0).to(device)   # (1, C, H, W)
+    x, y = dataset[idx] # (C, H, W)
+    x_in = x.unsqueeze(0).to(device) # (1, C, H, W)
 
     with torch.no_grad():
         y_pred = model(x_in)
@@ -165,11 +157,11 @@ def flatten_dict(d, parent_key="", sep="."):
             items.append((new_key, v))
     return dict(items)
 
-# ======================================== FB/AT KD ===============================================
+# ================================================== FB/AT KD ==========================================================
 
 def register_hook(model, model_name, container, name, layers=-2):
     if model_name == "DnCNN":
-        layer = model.dncnn[layers] # Igual cambiar esto tambien para no usar un indice que se elige manualmente
+        layer = model.dncnn[layers]
         print(layer)
     elif model_name == "UNet":
         layer = model.bottleneck
@@ -199,16 +191,12 @@ def register_hooks_at(model, feature_dict):
 def attention_map(feat):
     return F.normalize(feat.pow(2).mean(dim=1, keepdim=True).flatten(1), dim=1)
 
-# Esto revisalo, no loo hace exactamente igual en https://github.com/alexlopezcifuentes/Distillation-Attention/blob/main/Distillation%20Zoo/AT.py
 def attention_transfer_loss(s_feat, t_feat):
-    if s_feat.shape[2:] != t_feat.shape[2:]: # Realmente esto es un poco por si usas modelos condiferentes arquitecturas,
-        # porque como tal al tener la misma arquitectura per ocon diferentes tamaños estos modelos tendrán las mismas
-        # dimensiones en [H,W], lo que tiene mismatch es C (los modelos tienen shape [B, C, H, W])
+    if s_feat.shape[2:] != t_feat.shape[2:]:
         s_feat = F.interpolate(s_feat, size=t_feat.shape[2:], mode='bilinear', align_corners=False)
     return F.mse_loss(attention_map(s_feat), attention_map(t_feat))
-    # TODO: Buscar un metodo que pueda ser más representativo que MSE (DCT?)
 
-# ======================================== LATENCIA ===============================================
+# ================================================== LATENCIA ==========================================================
 
 def medir_latencia_gpu(model, loader, device, num_batches=50, warmup=10):
     model.eval()
@@ -244,3 +232,30 @@ def medir_latencia_gpu(model, loader, device, num_batches=50, warmup=10):
     mean_per_sample = mean_time / batch_size
 
     return mean_time, std_time, mean_per_sample
+
+# ==================================================== RUIDO ===========================================================
+
+def calcular_ruido(señal_norm, señal_ruido_norm):
+    ruido = señal_ruido_norm - señal_norm
+    p_señal = np.mean(np.abs(señal_norm) ** 2)
+    p_ruido = np.mean(np.abs(ruido) ** 2)
+    if p_ruido == 0:
+        return np.inf
+    return 10 * np.log10(p_señal / p_ruido)
+
+def evaluate_psnr(model, loader, device):
+    model.eval()
+    total_psnr = 0.0
+    eps = 1e-10
+
+    with torch.no_grad():
+        for X, Y in loader:
+            X, Y = X.to(device), Y.to(device)
+            pred = model(X)
+
+            mse = torch.mean((pred - Y) ** 2, dim=[1, 2, 3])
+            psnr = 10 * torch.log10(1.0 / (mse + eps))
+
+            total_psnr += psnr.mean().item()
+
+    return total_psnr / len(loader)

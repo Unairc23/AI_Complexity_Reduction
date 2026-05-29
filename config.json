@@ -1,8 +1,8 @@
 {
   "KDR":
   {
-    "X": "data/NIST_h_GBurg_5G_snr_16.npy",
-    "Y": "data/NIST_h_GBurg_5G.npy",
+    "X": "data/Datos_Sinteticos/TDL_D_85ns_fd1000_SNR20_h_est.npy",
+    "Y": "data/Datos_Sinteticos/TDL_D_85ns_fd1000_SNR20_h_real.npy",
     "sModel": "UNet",
     "tModel": "UNet",
     "t_train": false,
@@ -28,14 +28,13 @@
     "sEpoch": 1000,
     "lr": 0.0001,
     "batch_size": 32,
-    "patience": 7
+    "patience": 5
   },
   "Data": {
-    "Dset": "h_GBurg_5G",
-    "Sint": false,
-    "MixedData": false,
+    "Dset": "TDL_D_85ns_fd1000_SNR20_h_real",
+    "Sint": true,
     "MixedSNR": true,
-    "Stride":32,
+    "Stride":128,
     "Unica": false,
     "Snr_db": [10, 13, 15, 17, 20, 22, 25],
     "Kfold": true

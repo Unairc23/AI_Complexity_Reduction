@@ -1,0 +1,34 @@
+{
+  "method": "bayes",
+  "metric": {
+    "name": "mse",
+    "goal": "minimize"
+  },
+  "parameters": {
+    "alpha": {
+      "min": 0.1,
+      "max": 0.9
+    },
+    "learning_rate": {
+      "values": [
+        0.0001
+      ]
+    },
+    "epochs": {
+      "values": [
+        1
+      ]
+    },
+    "batch_size": {
+      "values": [
+        16,
+        32
+      ]
+    },
+    "patience": {
+      "values": [
+        5
+      ]
+    }
+  }
+}

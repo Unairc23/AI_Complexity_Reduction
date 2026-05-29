@@ -1,40 +1,24 @@
-import json
 import os
-import datetime
-from glob import glob
-from operator import contains
-import openpyxl
 import wandb
-import statistics
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-import torch.ao.nn.quantized as nnq
-from PIL import Image
-from matplotlib import pyplot as plt
-from torch.utils.data import random_split, Dataset
-import torch.nn.functional as F
-import random, numpy as np
-from sklearn.metrics.pairwise import cosine_similarity
-import builtins
+import random
+from torch.utils.data import Dataset
 from pathlib import Path
 
-from modelos import DnCNN, ResNetDenoiser, UNetDenoiser
+from modelos import DnCNN, UNetDenoiser
 from utils import *
 from Cuantizacion import *
+from train_models import train_basic, train_akd, train_kd, train_fkd, run_with_kfold, evaluate
 
 with open("config.json", "r", encoding="utf-8") as f:
     conf = json.load(f)
+
+with open("config_wandb.json", "r", encoding="utf-8") as f:
+    conf_wandb = json.load(f)
 
 MODEL_REGISTRY = {
     "DnCNN": {
         "Student": lambda: DnCNN(depth=conf["Model"]["sDepth"]),
         "Teacher": lambda: DnCNN(depth=conf["Model"]["tDepth"])
-    },
-    "resnet_denoiser": {
-        "Student": lambda: ResNetDenoiser(in_channels=2, base_channels=conf["Model"]["sDepth"]),
-        "Teacher": lambda: ResNetDenoiser(in_channels=2, base_channels=conf["Model"]["tDepth"])
     },
     "UNet": {
         "Student": lambda: UNetDenoiser(in_channels=2, base_channels=conf["Model"]["sDepth"]),
@@ -76,30 +60,8 @@ torch.backends.cudnn.deterministic = True
 torch.backends.cudnn.benchmark = False
 
 # =============================================== Crear dataset ========================================================
-if (contains(conf["KDR"]["X"], "bsd500")):
-    prepare_bsd500_dataset(conf)
 batch_size = conf["Model"]["batch_size"]
 
-# X = np.load(conf["KDR"]["X"])
-# Y = np.load(conf["KDR"]["Y"])
-#
-# full_dataset = NPYDataset(X, Y)
-#
-# total_size = len(full_dataset)
-# train_size = int(0.8 * total_size)
-# val_size = int(0.1 * total_size)
-# test_size = total_size - train_size - val_size
-#
-# train_ds, val_ds, test_ds = random_split(
-#     full_dataset,
-#     [train_size, val_size, test_size]
-# )
-#
-# train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-# val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-# test_loader = torch.utils.data.DataLoader(test_ds, batch_size=batch_size, shuffle=False, num_workers=0)
-
-# if not (conf["Data"]["Kfold"]):
 X_train = np.load(conf["KDR"]["X"].replace(".npy", "_Train.npy"))
 X_test = np.load(conf["KDR"]["X"].replace(".npy", "_Test.npy"))
 X_val = np.load(conf["KDR"]["X"].replace(".npy", "_Val.npy"))
@@ -135,128 +97,9 @@ def cargar_fold(i, batch=16):
 
     return train_loader, val_loader
 
-# ====================================== Entrenamiento de los modelos =================================================
-def train(model, train_loader, epochs, learning_rate, device):
-    criterion = nn.MSELoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-    early_stopper = EarlyStoppingLoss(patience=conf["Model"]["patience"])
-
-    train_history = []
-    val_history = []
-
-    model.train()
-
-    for epoch in range(epochs):
-        running_loss = 0.0
-        for X, Y in train_loader:
-            # X: Señal ruidoso
-            # Y: Señal limpia/original
-            X, Y = X.to(device), Y.to(device)
-
-            optimizer.zero_grad()
-            outputs = model(X)
-
-            if (conf["Data"]["Unica"]):
-                Y = Y[:, :, 64, :]
-                outputs = outputs[:, :, 64, :]
-
-            # outputs: Output of the network for the collection of images. A tensor of dimensionality batch_size x num_classes
-            # X: The actual images. Vector of dimensionality batch_size
-            loss = criterion(outputs, Y)
-            loss.backward()
-            optimizer.step()
-
-            running_loss += loss.item()
-
-        train_loss = running_loss / len(train_loader)
-        val_loss = evaluate(model, val_loader, device)
-
-        train_history.append(train_loss)
-        val_history.append(val_loss)
-
-        print(f"Epoch {epoch+1}/{epochs} | Train_Loss: {train_loss:.8f} | Val_Loss: {val_loss:.8f}")
-
-        if early_stopper.step(val_loss, model):
-            print("Parando el entrenamiento")
-            break
-
-    early_stopper.restore(model)
-
-    return train_history, val_history
-
-def train_knowledge_distillation(teacher, student, train_loader, val_loader, epochs, learning_rate, alpha, device, patience):
-    mse_loss = nn.MSELoss()
-    optimizer = optim.Adam(student.parameters(), lr=learning_rate)
-    early_stopper = EarlyStoppingLoss(patience=patience)
-
-    teacher.to(device)
-    student.to(device)
-    teacher.eval()  # Teacher set to evaluation mode
-    student.train() # Student to train mode
-
-    train_history = []
-    val_history = []
-
-    for epoch in range(epochs):
-        running_loss = 0.0
-        student_running_loss = 0.0 # Usado simplemente para ver la diferencia train/val, usando la del KD esta siempre sera mejor
-        for X, Y in train_loader:
-            X, Y = X.to(device), Y.to(device)
-
-            optimizer.zero_grad()
-
-            # Forward pass with the teacher model - do not save gradients here as we do not change the teacher's weights
-            with torch.no_grad():
-                teacher_pred = teacher(X)
-            # Forward pass with the student model
-            student_pred = student(X)
-
-            if (conf["Data"]["Unica"]):
-                Y = Y[:, :, 64, :]
-                teacher_pred = teacher_pred[:, :, 64, :]
-                student_pred = student_pred[:, :, 64, :]
-
-            # teacher_y_loss = mse_loss(teacher_pred, Y)
-            student_y_loss = mse_loss(student_pred, Y)
-
-            teacher_student_loss = mse_loss(student_pred, teacher_pred)
-            loss = alpha * teacher_student_loss + (1.0 - alpha) * student_y_loss
-
-            # if teacher_y_loss < teacher_threshold:
-            #     teacher_student_loss = mse_loss(student_pred, teacher_pred)
-            #     loss = alpha * teacher_student_loss + (1.0 - alpha) * student_y_loss
-            # else:
-            #     loss = student_y_loss
-
-            loss.backward()
-            optimizer.step()
-            running_loss += loss.item()
-            student_running_loss += student_y_loss.item()
-
-        epoch_loss = student_running_loss / len(train_loader)
-        val_loss = evaluate(student, val_loader, device)
-
-        train_history.append(epoch_loss)
-        val_history.append(val_loss)
-
-        print(f"Epoch {epoch + 1}/{epochs} | Train_Loss: {epoch_loss:.8f} | Val_Loss: {val_loss:.8f}")
-
-        if(conf["KDR"]["wandb"]):
-            wandb.log({
-                "epoch": epoch + 1,
-                "mse": epoch_loss
-            })
-
-        if early_stopper.step(val_loss, student):
-            print("Early stopping triggered!")
-            break
-
-    early_stopper.restore(student)
-
-    return train_history, val_history
-
 def train_kd_wandb(teacher):
     wandb.init(
+        # Estos parametros se añaden aqui unicamente para tener luego registro de ello en wandb
         config={
             'model': conf["KDR"]["sModel"],
             'sint': conf["Data"]["Sint"],
@@ -268,292 +111,9 @@ def train_kd_wandb(teacher):
     )
     cfg = wandb.config
 
-    def run_fold(train_loader, val_loader):
-        student = MODEL_REGISTRY[sModel]["Student"]().to(device)
-        train_knowledge_distillation(
-            teacher,
-            student=student,
-            train_loader=train_loader,
-            val_loader=val_loader,
-            epochs=cfg.epochs,
-            learning_rate=cfg.learning_rate,
-            device=device,
-            alpha=cfg.alpha,
-            patience=cfg.patience,
-        )
-        return evaluate(student, val_loader, device)
-
-    if not conf["Data"]["Kfold"]:
-        train_loader = DataLoader(train_ds, batch_size=cfg.batch_size, shuffle=True, num_workers=0)
-        val_loader = DataLoader(val_ds, batch_size=cfg.batch_size, shuffle=False, num_workers=0)
-
-        mse = run_fold(train_loader, val_loader)
-        wandb.log({"mse": mse})
-
-    else:
-        N_FOLDS = 4
-        mse_per_fold = []
-
-        for i in range(N_FOLDS):
-            train_loader, val_loader = cargar_fold(i, cfg.batch_size)
-            fold_mse = run_fold(train_loader, val_loader)
-            mse_per_fold.append(fold_mse)
-            wandb.log({f"mse_fold_{i}": fold_mse})
-            print(f"Fold {i+1}/{N_FOLDS} | MSE: {fold_mse:.6f}")
-
-        mse_mean = statistics.mean(mse_per_fold)
-        mse_std = statistics.stdev(mse_per_fold)
-
-        wandb.log({
-            "mse_mean": mse_mean,
-            "mse_std":  mse_std,
-        })
-        print(f"\nMean: {mse_mean:.6f} | Std: {mse_std:.6f}")
-
-def train_feature_based_kd(teacher, student, train_loader, epochs, learning_rate, alpha, device, fkd_feats=None):
-
-    _fkd = fkd_feats if fkd_feats is not None else globals().get("fkd_features")
-    mse_loss = nn.MSELoss()
-    early_stopper = EarlyStoppingLoss(patience=conf["Model"]["patience"] + 8)
-
-    teacher.to(device)
-    student.to(device)
-    teacher.eval()
-
-    with torch.no_grad():
-        dummy = next(iter(train_loader))[0][:1].to(device)
-        teacher(dummy)
-        t_ch = teacher_features["latent"].shape[1]
-        student(dummy)
-        s_ch = _fkd["latent"].shape[1]
-
-    bottleneck_proj = nn.Conv2d(t_ch, s_ch, kernel_size=1, bias=False).to(device)
-    print(f"Linear bottleneck: {t_ch} → {s_ch} canales")
-
-    # Warmup del bottleneck (student congelado)
-    WARMUP_EPOCHS = max(5, epochs // 50)
-
-    # Congela el student
-    for param in student.parameters():
-        param.requires_grad = False
-
-    warmup_optimizer = optim.Adam(
-        bottleneck_proj.parameters(),
-        lr=learning_rate * 20
-    )
-
-    print(f"\n── Bottleneck warmup ({WARMUP_EPOCHS} epochs, student congelado) ──")
-    for epoch in range(WARMUP_EPOCHS):
-        bottleneck_proj.train()
-        running_kd = 0.0
-
-        for X, _ in train_loader:
-            X = X.to(device)
-            warmup_optimizer.zero_grad()
-
-            with torch.no_grad():
-                teacher(X)
-                t_latent = teacher_features["latent"].detach()
-                student(X)
-                s_latent = _fkd["latent"].detach()  # fijo, no aprende aún
-
-            t_latent_proj = bottleneck_proj(t_latent)
-            kd_loss = cosine_kd_loss(s_latent, t_latent_proj)
-            kd_loss.backward()
-            warmup_optimizer.step()
-            running_kd += kd_loss.item()
-
-        print(f"  Warmup {epoch+1}/{WARMUP_EPOCHS} | KD_Loss: {running_kd/len(train_loader):.8f}")
-
-    # Descongelar el student
-    for param in student.parameters():
-        param.requires_grad = True
-
-    # Entrenamiento conjunto
-    optimizer = optim.Adam([
-        {"params": student.parameters(), "lr": learning_rate},
-        {"params": bottleneck_proj.parameters(), "lr": learning_rate}
-    ])
-
-    train_history, val_history = [], []
-
-    print(f"\n Entrenamiento conjunto ({epochs} epochs)")
-    for epoch in range(epochs):
-        student.train()
-        bottleneck_proj.train()
-        running_loss = 0.0
-        student_running_loss = 0.0
-
-        for X, Y in train_loader:
-            X, Y = X.to(device), Y.to(device)
-            optimizer.zero_grad()
-
-            with torch.no_grad():
-                teacher(X)
-                t_latent = teacher_features["latent"].detach()
-
-            student_pred = student(X)
-            s_latent = _fkd["latent"]
-
-            if conf["Data"]["Unica"]:
-                Y = Y[:, :, 64, :]
-                student_pred = student_pred[:, :, 64, :]
-
-            t_latent_proj = bottleneck_proj(t_latent)
-            out_loss = mse_loss(student_pred, Y)
-            kd_loss = cosine_kd_loss(s_latent, t_latent_proj)
-            loss = out_loss + alpha * kd_loss
-
-            loss.backward()
-            optimizer.step()
-
-            student_running_loss += out_loss.item()
-            running_loss += loss.item()
-
-        epoch_loss = student_running_loss / len(train_loader)
-        val_loss = evaluate(student, val_loader, device)
-        train_history.append(epoch_loss)
-        val_history.append(val_loss)
-        print(f"Epoch {epoch + 1}/{epochs} | Train_Loss: {epoch_loss:.8f} | Val_Loss: {val_loss:.8f}")
-
-        if early_stopper.step(val_loss, student):
-            print("Early stopping triggered!")
-            break
-
-    early_stopper.restore(student)
-    return train_history, val_history
-
-def cosine_kd_loss(h_s, h_t):  # h_s, h_t: [B, C, H, W]
-    B, C_s, H, W = h_s.shape
-    _, C_t, _, _ = h_t.shape
-
-    if (conf["KDR"]["features"] == "spatial"):
-        h_s = h_s.permute(0, 2, 3, 1).reshape(B * H * W, C_s)
-        h_t = h_t.permute(0, 2, 3, 1).reshape(B * H * W, C_t)
-    elif (conf["KDR"]["features"] == "channel"):
-        h_s = h_s.reshape(B, C_s, H*W)
-        h_t = h_t.reshape(B, C_t, H*W)
-    elif (conf["KDR"]["features"] == "global"):
-        h_s = h_s.reshape(B, C_s * H * W)
-        h_t = h_t.reshape(B, C_t * H * W)
-
-    return 1 - F.cosine_similarity(h_s, h_t, dim=-1).mean()
-
-def train_attention_kd(teacher, student, t_feats, s_feats, train_loader, epochs, learning_rate, alpha, device):
-    mse_loss = nn.MSELoss()
-    optimizer = optim.Adam(student.parameters(), lr=learning_rate)
-    early_stopper = EarlyStoppingLoss(patience=conf["Model"]["patience"])
-
-    teacher.to(device)
-    student.to(device)
-    teacher.eval()
-    student.train()
-
-    train_history = []
-    val_history = []
-
-    for epoch in range(epochs):
-        student_running_loss = 0.0
-        for X, Y in train_loader:
-            X, Y = X.to(device), Y.to(device)
-            optimizer.zero_grad()
-
-            with torch.no_grad():
-                teacher(X)
-                t_enc1 = t_feats["enc1"].detach()
-                t_enc2 = t_feats["enc2"].detach()
-                t_bottle = t_feats["bottleneck"].detach()
-
-            student_pred = student(X)
-            s_enc1 = s_feats["enc1"]
-            s_enc2 = s_feats["enc2"]
-            s_bottle = s_feats["bottleneck"]
-
-            out_loss = mse_loss(student_pred, Y)
-            at_loss = (
-                    attention_transfer_loss(s_enc1, t_enc1) +
-                    attention_transfer_loss(s_enc2, t_enc2) +
-                    attention_transfer_loss(s_bottle, t_bottle)
-            )
-            #print(f"Loss: {out_loss:.8f} / ATLoss: {at_loss:.8f}") # AtLoss es dos ordenes de magnitud mas pequeño
-            loss = out_loss + alpha * at_loss
-
-            loss.backward()
-            optimizer.step()
-            student_running_loss += out_loss.item()
-
-        epoch_loss = student_running_loss / len(train_loader)
-        val_loss = evaluate(student, val_loader, device)
-        train_history.append(epoch_loss)
-        val_history.append(val_loss)
-        print(f"Epoch {epoch + 1}/{epochs} | Train_Loss: {epoch_loss:.8f} | Val_Loss: {val_loss:.8f}")
-
-        if early_stopper.step(val_loss, student):
-            print("Early stopping triggered!")
-            break
-
-    early_stopper.restore(student)
-    return train_history, val_history
-
-
-# ============================================== Early stopping ========================================================
-def evaluate(model, loader, device):
-    model.eval()
-    mse = nn.MSELoss()
-    total_loss = 0.0
-
-    with torch.no_grad():
-        for X, Y in loader:
-            X, Y = X.to(device), Y.to(device)
-            pred = model(X)
-
-            if (conf["Data"]["Unica"]):
-                Y = Y[:, :, 64, :]
-                pred = pred[:, :, 64, :]
-
-            total_loss += mse(pred, Y).item()
-
-    return total_loss / len(loader)
-
-# Esto queda un poco inutilizado porque no es una señal tan "Comparable" como seria MSE
-def evaluate_psnr(model, loader, device):
-    model.eval()
-    total_psnr = 0.0
-    eps = 1e-10
-
-    with torch.no_grad():
-        for X, Y in loader:
-            X, Y = X.to(device), Y.to(device)
-            pred = model(X)
-
-            mse = torch.mean((pred - Y) ** 2, dim=[1, 2, 3])
-            psnr = 10 * torch.log10(1.0 / (mse + eps))
-
-            total_psnr += psnr.mean().item()
-
-    return total_psnr / len(loader)
-
-class EarlyStoppingLoss:
-    def __init__(self, patience=5, min_delta=0.0):
-        self.patience = patience
-        self.min_delta = min_delta
-        self.best_loss = float("inf")
-        self.counter = 0
-        self.best_state = None
-
-    def step(self, val_loss, model):
-        if val_loss < self.best_loss + self.min_delta: # Para mse < / Para psnr >
-            self.best_loss = val_loss
-            self.counter = 0
-            self.best_state = {k: v.cpu().clone() for k, v in model.state_dict().items()}
-        else:
-            self.counter += 1
-
-        return self.counter >= self.patience
-
-    def restore(self, model):
-        if self.best_state is not None:
-            model.load_state_dict(self.best_state)
+    run_with_kfold(train_fn=train_kd, model_fn=MODEL_REGISTRY[sModel]["Student"], load_fold_fn=cargar_fold,
+                   device=device, batch=cfg.batch_size, teacher=teacher, alpha=cfg.alpha, patience=cfg.patience,
+                   epochs=cfg.epochs, learning_rate=cfg.learning_rate)
 
 # ============================================== CARGA MODELOS ========================================================
 def load_model(model, path, device):
@@ -588,16 +148,18 @@ if __name__ == "__main__":
 
     if conf["KDR"]["t_train"]:
         print("\n================ Entrenando teacher ================")
-        teacher_hist = train(model=teacher, train_loader=train_loader, epochs=conf["Model"]["tEpoch"], learning_rate=conf["Model"]["lr"],
-              device=device)
+        teacher_hist = train_basic(model=teacher, train_loader=train_loader, val_loader=val_loader,
+                                   epochs=conf["Model"]["tEpoch"], learning_rate=conf["Model"]["lr"],
+                                   device=device, patience=conf["Model"]["patience"])
         torch.save(teacher.state_dict(), f"model/{tModel}_{t_tamaño}l_{snr_med}snr.pth")
     else:
         teacher = load_model(teacher, path=f"model/{tModel}_{t_tamaño}l_{snr_med}snr.pth", device=device)
 
     if conf["KDR"]["s_train"]:
         print("\n================ Entrenando no_KD_student ================")
-        student_hist = train(model=student, train_loader=train_loader, epochs=conf["Model"]["sEpoch"], learning_rate=conf["Model"]["lr"],
-              device=device)
+        student_hist = train_basic(model=student, train_loader=train_loader, val_loader=val_loader,
+                             epochs=conf["Model"]["sEpoch"], learning_rate=conf["Model"]["lr"],
+                             device=device, patience=conf["Model"]["patience"])
         torch.save(student.state_dict(), f"model/{sModel}_{s_tamaño}l_{snr_med}snr.pth")
     else:
         student = load_model(student, path=f"model/{sModel}_{s_tamaño}l_{snr_med}snr.pth", device=device)
@@ -629,7 +191,7 @@ if __name__ == "__main__":
     mseS = evaluate(student, test_loader, device)
     psnrS = evaluate_psnr(student, test_loader, device)
     mean_latS, std_latS, mean_per_sampleS = medir_latencia_gpu(student, test_loader, device)
-    for x,y in test_loader: # For simple para comprobar que el ruido está correctamente aplicado en el datasr (se puede quitar)
+    for x,y in test_loader: # For simple para comprobar que el ruido está correctamente aplicado en el dataset
         snr_db = calcular_ruido(señal_ruido_norm=x.numpy(), señal_norm=y.numpy())
         snr.append(snr_db)
     print(f"MSE teacher: {mseT:.8f}")
@@ -680,9 +242,9 @@ if __name__ == "__main__":
         print("\n================ Entrenando kd_student ================")
         kd_student = MODEL_REGISTRY[sModel]["Student"]().to(device)
 
-        kd_hist = train_knowledge_distillation(teacher=teacher, student=kd_student, train_loader=train_loader, val_loader=val_loader,
-                                     epochs=conf["Model"]["sEpoch"], learning_rate=conf["Model"]["lr"], device=device,
-                                     alpha=conf["KDR"]["alpha"], patience=conf["Model"]["patience"])
+        kd_hist = train_kd(teacher=teacher, student=kd_student, train_loader=train_loader, val_loader=val_loader,
+                           epochs=conf["Model"]["sEpoch"], learning_rate=conf["Model"]["lr"], device=device,
+                           alpha=conf["KDR"]["alpha"], patience=conf["Model"]["patience"])
 
         # Comparacion entre teacher y modelo destilado
         graficar(kd_student, test_ds, device, idx=idx, modelName="kd_student", modo="canales")
@@ -695,8 +257,11 @@ if __name__ == "__main__":
         fkd_features = {}
         register_hook(kd_student_feature, sModel, fkd_features, "latent", conf["KDR"]["f_layers"]["s_layers"])
 
-        fkd_hist = train_feature_based_kd(teacher=teacher, student=kd_student_feature, train_loader=train_loader, epochs=conf["Model"]["sEpoch"],
-                               learning_rate=conf["Model"]["lr"], device=device, alpha=conf["KDR"]["alpha"])
+        fkd_hist = train_fkd(teacher=teacher, student=kd_student_feature,
+                             t_features=teacher_features, s_features=fkd_features,
+                             train_loader=train_loader, val_loader=val_loader, epochs=conf["Model"]["sEpoch"],
+                             learning_rate=conf["Model"]["lr"], device=device, alpha=conf["KDR"]["alpha"],
+                             patience=conf["Model"]["patience"])
 
         graficar(kd_student_feature, test_ds, device, idx=idx, modelName="kd_student_feature", modo="canales")
 
@@ -708,58 +273,31 @@ if __name__ == "__main__":
         akd_features = {}
         register_hooks_at(kd_student_attention, akd_features)
 
-        akd_hist = train_attention_kd(teacher=teacher, student=kd_student_attention, t_feats=teacher_attentions,
-                                            s_feats=akd_features, train_loader=train_loader, epochs=conf["Model"]["sEpoch"],
-                                            learning_rate=conf["Model"]["lr"], device=device, alpha=conf["KDR"]["alpha"])
+        akd_hist = train_akd(teacher=teacher, student=kd_student_attention,
+                             t_attentions=teacher_attentions, s_attentions=akd_features,
+                             train_loader=train_loader, val_loader=val_loader, epochs=conf["Model"]["sEpoch"],
+                             learning_rate=conf["Model"]["lr"], device=device, alpha=conf["KDR"]["alpha"],
+                             patience=conf["Model"]["patience"])
 
         graficar(kd_student_attention, test_ds, device, idx=idx, modelName="kd_student_attention", modo="canales")
 
-    # Carga el historial del teacher / student solo si se han entrenado, si se han cargado no porque no están guardados en ningun lado por ahora
     historial = {}
-    if conf["KDR"]["t_train"]:
+    if teacher_hist:
         historial["Teacher"] = teacher_hist
-    if conf["KDR"]["s_train"]:
+    if student_hist:
         historial["Student"] = student_hist
-    if conf["KDR"]["KD"]:
+    if kd_hist:
         historial["KD_Student"] = kd_hist
-    if conf["KDR"]["FKD"]:
+    if fkd_hist:
         historial["FKD_Student"] = fkd_hist
-    if conf["KDR"]["AKD"]:
+    if akd_hist:
         historial["AKD_Student"] = akd_hist
-
-    plot_training_curves(historial)
-    # guardar_training_curves(historial)
+    if len(historial) > 0:
+        plot_training_curves(historial)
+        # guardar_training_curves(historial)
 
 # =============================================== COSAS WANDB ==========================================================
     if (conf["KDR"]["wandb"]):
-        sweep_config = {
-            'method': 'bayes',  # bayesian, random, grid
-            'metric': {
-                'name': 'mse',
-                'goal': 'minimize'
-            },
-            'parameters': {
-                'alpha': {
-                    'min': 0.1,
-                    'max': 0.9
-                },
-                # 'features': {
-                #     'values': ['spatial', 'channel', 'global']
-                # },
-                'learning_rate': {
-                    'values': [0.0001]
-                },
-                'epochs': {
-                    'values': [1000]
-                },
-                'batch_size': {
-                    'values': [16, 32]
-                },
-                'patience':{
-                    'values': [5]
-                }
-            }
-        }
-
-        sweep_id = wandb.sweep(sweep_config, project="Denoising_Basic_KD_1.6")
+        sweep_config = conf_wandb
+        sweep_id = wandb.sweep(sweep_config, project="Basic_KD")
         wandb.agent(sweep_id, lambda:train_kd_wandb(teacher))
