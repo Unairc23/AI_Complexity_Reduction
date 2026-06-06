@@ -110,9 +110,9 @@ def train_kd_wandb(teacher):
     )
     cfg = wandb.config
 
-    run_with_kfold(train_fn=train_kd, model_fn=MODEL_REGISTRY[sModel]["Student"], load_fold_fn=cargar_fold,
+    run_with_kfold(train_fn=train_fkd, model_fn=MODEL_REGISTRY[sModel]["Student"], load_fold_fn=cargar_fold,
                    device=device, batch=cfg.batch_size, teacher=teacher, alpha=cfg.alpha, patience=cfg.patience,
-                   epochs=cfg.epochs, learning_rate=cfg.learning_rate)
+                   epochs=cfg.epochs, learning_rate=cfg.learning_rate, t_features=teacher_features, beta=cfg.beta)
 
 # ============================================== CARGA MODELOS ========================================================
 def load_model(model, path, device):
@@ -206,6 +206,9 @@ if __name__ == "__main__":
     print(f"Latencia teacher: {mean_per_sampleT:.8f}ms")
     print(f"Latencia student: {mean_per_sampleS:.8f}ms")
     print(f"SNR medio del dataset de test: {np.mean(snr):.2f} dB")
+
+    graficar_attention_maps(teacher, test_ds, device, idx=idx, modelName="Teacher")
+    graficar_attention_maps(student, test_ds, device, idx=idx, modelName="Student")
 
     # ============================================== Cuantizar ========================================================
 
@@ -307,5 +310,5 @@ if __name__ == "__main__":
             conf_wandb = json.load(f)
 
         sweep_config = conf_wandb
-        sweep_id = wandb.sweep(sweep_config, project="Denoising_Feature_KD_1.3")
+        sweep_id = wandb.sweep(sweep_config, project="Denoising_Feature_KD_1.5")
         wandb.agent(sweep_id, lambda:train_kd_wandb(teacher))

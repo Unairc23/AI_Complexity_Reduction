@@ -54,7 +54,7 @@ train_size = int(0.9 * len(train_dataset))
 val_size = len(train_dataset) - train_size
 train_ds, val_ds = random_split(train_dataset, [train_size, val_size])
 
-#Dataloaders
+# Dataloaders
 train_loader = torch.utils.data.DataLoader(train_ds, batch_size=128, shuffle=True, num_workers=2)
 val_loader = torch.utils.data.DataLoader(val_ds, batch_size=128, shuffle=False, num_workers=2)
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=128, shuffle=False, num_workers=2)
@@ -266,7 +266,7 @@ def parse_args():
 
 
 if __name__ == "__main__":
-    # Creo que esta linea solo es encesaria en windows, linux hace un fork
+    # Creo que esta linea solo es necesaria en windows, linux hace un fork
     torch.multiprocessing.freeze_support()
 
     args = parse_args()

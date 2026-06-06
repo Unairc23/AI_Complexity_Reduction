@@ -157,6 +157,40 @@ def flatten_dict(d, parent_key="", sep="."):
             items.append((new_key, v))
     return dict(items)
 
+def graficar_attention_maps(model, dataset, device, idx=0, modelName="modelo"):
+    model.eval()
+
+    x, y = dataset[idx]
+    x_in = x.unsqueeze(0).to(device)
+
+    feature_dict = {}
+    register_hooks_at(model, feature_dict)
+
+    with torch.no_grad():
+        y_pred = model(x_in)
+
+    layer_names = ["enc1", "enc2", "bottleneck"]
+    fig, axs = plt.subplots(1, len(layer_names), figsize=(15, 4))
+    fig.suptitle(f"Attention Maps - {modelName}", fontsize=14)
+
+    for ax, name in zip(axs, layer_names):
+        if name not in feature_dict:
+            ax.set_title(f"{name} (no disponible)")
+            ax.axis("off")
+            continue
+
+        feat = feature_dict[name]  # (1, C, H, W)
+        # Mapa de atención: media cuadrática sobre canales -> (H, W)
+        attn = feat.pow(2).mean(dim=1).squeeze(0).cpu().numpy()
+
+        im = ax.imshow(attn, cmap="hot")
+        ax.set_title(name)
+        ax.axis("off")
+        plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
+
+    plt.tight_layout()
+    plt.show()
+
 # ================================================== FB/AT KD ==========================================================
 
 def register_hook(model, model_name, container, name, layers=-2):

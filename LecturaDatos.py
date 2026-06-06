@@ -234,6 +234,7 @@ def crear_imagenes_sint():
         folds = KFold(n_splits=5, shuffle=True, random_state=42)
         fold_real_dir, fold_est_dir = preparar_directorios_folds()
         dset_name = Path(dset).stem
+        dsetR_name = Path(dset_ruido).stem
         for fold_idx, (train_idx, val_idx) in enumerate(folds.split(idx_train)):
             idx_fold_train = np.sort(idx_train[train_idx])
             idx_fold_val = np.sort(idx_train[val_idx])
@@ -245,8 +246,8 @@ def crear_imagenes_sint():
 
             real_train_path = fold_real_dir / f'{dset_name}_{fold_idx}_Train.npy'
             real_val_path = fold_real_dir / f'{dset_name}_{fold_idx}_Val.npy'
-            est_train_path = fold_est_dir / f'{dset_name}_{fold_idx}_Train.npy'
-            est_val_path = fold_est_dir / f'{dset_name}_{fold_idx}_Val.npy'
+            est_train_path = fold_est_dir / f'{dsetR_name}_{fold_idx}_Train.npy'
+            est_val_path = fold_est_dir / f'{dsetR_name}_{fold_idx}_Val.npy'
 
             np.save(real_train_path, img_fold_train)
             np.save(real_val_path, img_fold_val)

@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import wandb
-from utils import attention_transfer_loss, register_hook, register_hooks_at
+from utils import attention_transfer_loss, register_hook, register_hooks_at, evaluate_psnr
 
 with open("config.json", "r", encoding="utf-8") as f:
     conf = json.load(f)
@@ -148,7 +148,7 @@ def train_fkd(teacher, student, t_features, s_features, train_loader, val_loader
         lr=learning_rate * 20
     )
 
-    print(f"\n── Bottleneck warmup ({WARMUP_EPOCHS} epochs, student congelado) ──")
+    print(f"\n Bottleneck warmup ({WARMUP_EPOCHS} epochs, student congelado)")
     for epoch in range(WARMUP_EPOCHS):
         bottleneck_proj.train()
         running_kd = 0.0
@@ -364,6 +364,7 @@ class EarlyStoppingLoss:
 def run_with_kfold(train_fn, model_fn, load_fold_fn, device, batch, **kwargs,):
     n_folds = conf["Data"].get("n_folds", 4)
     fold_mses = []
+    fold_psnrs = []
 
     for i in range(n_folds):
         print(f"\n Fold {i+1}/{n_folds}")
@@ -384,16 +385,20 @@ def run_with_kfold(train_fn, model_fn, load_fold_fn, device, batch, **kwargs,):
         )
         fold_mse = val_hist[-1]
         fold_mses.append(fold_mse)
-        print(f"Fold {i+1} | MSE: {fold_mse:.6f}")
+        fold_psnr = evaluate_psnr(student, val_loader, device)
+        fold_psnrs.append(fold_psnr)
+        print(f"Fold {i+1} | MSE: {fold_mse:.6f} | PSNR: {fold_psnr:.6f}")
 
         if conf["KDR"].get("wandb"):
-            wandb.log({f"mse_fold_{i}": fold_mse})
+            wandb.log({f"mse_fold_{i}": fold_mse, f"psnr_fold_{i}": fold_psnr})
 
     mse_mean = statistics.mean(fold_mses)
     mse_std  = statistics.stdev(fold_mses) if n_folds > 1 else 0.0
-    print(f"\nK-Fold → Mean: {mse_mean:.6f} | Std: {mse_std:.6f}")
+    psnr_mean = statistics.mean(fold_psnrs)
+    psnr_std = statistics.stdev(fold_psnrs) if n_folds > 1 else 0.0
+    print(f"\nK-Fold → Mean: {mse_mean:.6f} | Std: {mse_std:.6f} | PSNR: {psnr_mean:.6f} | PSNR Std: {psnr_std:.6f}")
 
     if conf["KDR"].get("wandb"):
-        wandb.log({"mse_mean": mse_mean, "mse_std": mse_std})
+        wandb.log({"mse_mean": mse_mean, "mse_std": mse_std, "psnr_mean": psnr_mean, "psnr_std": psnr_std})
 
-    return mse_mean, mse_std
+    return mse_mean, mse_std, psnr_mean, psnr_std
