@@ -218,15 +218,15 @@ def crear_imagenes_sint():
     print(f"Imagenes guardadas en {dset.replace('.npy', '_Train.npy')}")
     np.save(dset.replace(".npy", "_Test.npy"), imagenes_test)
     print(f"Imagenes guardadas en {dset.replace('.npy', '_Test.npy')}")
-    np.save(dset_ruido.replace(".npy", "_Val.npy"), imagenes_ruido_val)
-    print(f"Imagenes guardadas en {dset_ruido.replace('.npy', '_Val.npy')}")
+    np.save(dset.replace(".npy", "_Val.npy"), imagenes_ruido_val)
+    print(f"Imagenes guardadas en {dset.replace('.npy', '_Val.npy')}")
 
     np.save(dset_ruido.replace(".npy", "_Train.npy"), imagenes_ruido_train)
     print(f"Imagenes guardadas en {dset_ruido.replace('.npy', '_Train.npy')}")
     np.save(dset_ruido.replace(".npy", "_Test.npy"), imagenes_ruido_test)
     print(f"Imagenes guardadas en {dset_ruido.replace('.npy', '_Test.npy')}")
-    np.save(dset.replace(".npy", "_Val.npy"), imagenes_val)
-    print(f"Imagenes guardadas en {dset.replace('.npy', '_Val.npy')}")
+    np.save(dset_ruido.replace(".npy", "_Val.npy"), imagenes_val)
+    print(f"Imagenes guardadas en {dset_ruido.replace('.npy', '_Val.npy')}")
 
     if conf["Data"]["Kfold"]:
         folds = KFold(n_splits=5, shuffle=False)

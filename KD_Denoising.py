@@ -287,13 +287,13 @@ if __name__ == "__main__":
         if not (conf["Data"]["Kfold"]):
             kd_hist = train_kd(teacher=teacher, student=kd_student, train_loader=train_loader, val_loader=val_loader,
                                epochs=conf["Model"]["sEpoch"], learning_rate=conf["Model"]["lr"], device=device,
-                               alpha=0.7755, patience=conf["Model"]["patience"])
+                               alpha=conf["KDR"]["alpha"], patience=conf["Model"]["patience"])
             guardar_json(kd_hist, f"{results_dir}/hist_RKD.json")
         else:
             results, _ = run_with_kfold(train_fn=train_kd, model_fn=MODEL_REGISTRY[sModel]["Student"], load_fold_fn=cargar_fold,
                            device=device, batch=batch_size, teacher=teacher, alpha=conf["KDR"]["alpha"],
                            patience=conf["Model"]["patience"], epochs=conf["Model"]["sEpoch"],
-                           learning_rate=conf["Model"]["lr"])
+                           learning_rate=conf["Model"]["lr"], cuant="none")
             guardar_json(results, f"{results_dir}/kfold_RKD.json")
 
         # Comparacion entre teacher y modelo destilado
@@ -312,15 +312,16 @@ if __name__ == "__main__":
             fkd_hist = train_fkd(teacher=teacher, student=kd_student_feature,
                                  t_features=teacher_features, s_features=fkd_features,
                                  train_loader=train_loader, val_loader=val_loader, epochs=conf["Model"]["sEpoch"],
-                                 learning_rate=conf["Model"]["lr"], device=device, alpha=0.6997,
-                                 patience=conf["Model"]["patience"], beta=0.5227)
+                                 learning_rate=conf["Model"]["lr"], device=device, alpha=conf["KDR"]["alpha"],
+                                 patience=conf["Model"]["patience"], beta=conf["KDR"]["beta"])
             guardar_json(fkd_hist, f"{results_dir}/hist_FKD.json")
         else:
             results, _ = run_with_kfold(train_fn=train_fkd, model_fn=MODEL_REGISTRY[sModel]["Student"], load_fold_fn=cargar_fold,
                            device=device, batch=batch_size, teacher=teacher, alpha=conf["KDR"]["alpha"],
                            patience=conf["Model"]["patience"], epochs=conf["Model"]["sEpoch"],
-                           learning_rate=conf["Model"]["lr"], beta=conf["KDR"]["beta"], t_features=teacher_features)
-            guardar_json(results, f"{results_dir}/hist_FKD.json")
+                           learning_rate=conf["Model"]["lr"], beta=conf["KDR"]["beta"], t_features=teacher_features,
+                           cuant="none")
+            guardar_json(results, f"{results_dir}/kfold_FKD.json")
 
         torch.save(kd_student_feature.state_dict(), f"model/fkd_{sModel}_{s_tamaño}l_{snr_med}snr.pth")
         graficar(kd_student_feature, test_ds, device, idx=idx, modelName="kd_student_feature", modo="canales")
@@ -342,9 +343,10 @@ if __name__ == "__main__":
             guardar_json(akd_hist, f"{results_dir}/hist_AKD.json")
         else:
             results, _ = run_with_kfold(train_fn=train_akd, model_fn=MODEL_REGISTRY[sModel]["Student"], load_fold_fn=cargar_fold,
-                           device=device, batch=batch_size, teacher=teacher, alpha=0.649,
+                           device=device, batch=batch_size, teacher=teacher, alpha=conf["KDR"]["alpha"],
                            patience=conf["Model"]["patience"], epochs=conf["Model"]["sEpoch"],
-                           learning_rate=conf["Model"]["lr"], beta=0.6246, t_attentions=teacher_attentions)
+                           learning_rate=conf["Model"]["lr"], beta=conf["KDR"]["beta"], t_attentions=teacher_attentions,
+                           cuant="none")
             guardar_json(results, f"{results_dir}/hist_AKD.json")
 
         torch.save(kd_student_attention.state_dict(), f"model/akd_{sModel}_{s_tamaño}l_{snr_med}snr.pth")
@@ -367,7 +369,7 @@ if __name__ == "__main__":
 
         quantized_teacher = os.path.getsize("model/teacher_q.pth") / 1024 ** 2
         print(f"Quantized Teacher Size: {quantized_teacher}")
-        quantized_student = os.path.getsize("model/student_q.pth") / 1024 ** 2
+        quantized_student = os.path.getsize("model/baseline_q.pth") / 1024 ** 2
         print(f"Quantized Student Size: {quantized_student}\n")
         print(f"Diferencia de tamaño teacher: {quantized_teacher / teacher_size:.2f}x "
               f"({quantized_teacher:.2f}MB -> {teacher_size:.2f}MB)")
@@ -378,7 +380,7 @@ if __name__ == "__main__":
         idx = max(0, min(idx, len(test_ds) - 1))
         print(f"Mostrando muestra de test idx={idx}\n")
         graficar(teacher_q, test_ds, cpu, idx=idx, modelName="teacher_q", modo="canales")
-        graficar(student_q, test_ds, cpu, idx=idx, modelName="student_q", modo="canales")
+        graficar(student_q, test_ds, cpu, idx=idx, modelName="baseline_q", modo="canales")
 
         mseTq = evaluate(teacher_q, test_loader, cpu)
         psnrTq = evaluate_psnr(teacher_q, test_loader, cpu)
@@ -418,8 +420,8 @@ if __name__ == "__main__":
                                                  epochs=conf["Model"]["sEpoch"],
                                                  learning_rate=conf["Model"]["lr"],
                                                  cuant=conf["KDR"]["cuantizar"],)
-        torch.save(model.state_dict(), "model/student_q_post.pth")
-        quantized_student = os.path.getsize("model/student_q_post.pth") / 1024 ** 2
+        torch.save(model.state_dict(), f"model/student_q_{conf["KDR"]["cuantizar"]}.pth")
+        quantized_student = os.path.getsize(f"model/student_q_{conf["KDR"]["cuantizar"]}.pth") / 1024 ** 2
         print(f"post KD Quantized Student Size: {quantized_student}\n")
         mean_latT, std_latT, mean_per_sampleT = medir_latencia_gpu(model, test_loader, cpu)
 

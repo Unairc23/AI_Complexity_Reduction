@@ -1,8 +1,8 @@
 {
   "KDR":
   {
-    "X": "data/NIST_h_GBurg_5G_snr_16.npy",
-    "Y": "data/NIST_h_GBurg_5G.npy",
+    "X": "data/Datos_Sinteticos/TDL_D_85ns_fd1000_SNR20_h_est.npy",
+    "Y": "data/Datos_Sinteticos/TDL_D_85ns_fd1000_SNR20_h_real.npy",
     "sModel": "UNet",
     "tModel": "UNet",
     "t_train": true,
@@ -18,7 +18,7 @@
   },
   "Model": {
     "tDepth": 64,
-    "tEpoch": 1000,
+    "tEpoch": 700,
     "sDepth": 2,
     "sEpoch": 700,
     "lr": 0.0001,
